@@ -346,8 +346,11 @@ jobs:
           sudo apt-get update -qq
 
           sudo apt-get install -y -qq \
-            libshaderc-dev \
+            build-essential \
+            cmake \
+            pkg-config \
             libasound2-dev \
+            libudev-dev \
             libvulkan-dev \
             libxkbcommon-dev \
             libwayland-dev \
