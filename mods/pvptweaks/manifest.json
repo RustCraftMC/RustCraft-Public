@@ -1,0 +1,13 @@
+{
+  "id": "pvptweaks",
+  "name": "PvP Tweaks",
+  "version": "1.0.0",
+  "api_version": 1,
+  "entrypoints": {
+    "client": "scripts/client.lua"
+  },
+  "permissions": [
+    "client.read",
+    "client.modify"
+  ]
+}

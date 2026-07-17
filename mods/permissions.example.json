@@ -1,0 +1,9 @@
+{
+  "example_trusted_mod": [
+    "network.modify",
+    "network.cancel",
+    "network.send",
+    "protocol.translate",
+    "resources.register"
+  ]
+}

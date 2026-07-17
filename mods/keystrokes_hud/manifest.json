@@ -1,0 +1,16 @@
+{
+  "id": "keystrokes_hud",
+  "name": "Keystrokes HUD",
+  "version": "1.0.0",
+  "api_version": 1,
+  "entrypoints": {
+    "client": "scripts/client.lua"
+  },
+  "permissions": [
+    "client.read",
+    "input.observe",
+    "render.read",
+    "render.custom_draw"
+  ]
+}
+

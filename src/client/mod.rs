@@ -1,0 +1,20 @@
+//! Client-side game logic.
+pub mod app;
+pub mod armor;
+pub mod block_icon;
+pub mod book;
+pub mod config;
+pub mod gamepad;
+pub mod interaction;
+pub mod inventory;
+pub mod keybind;
+pub mod network;
+pub mod particles;
+pub mod physics;
+pub mod player;
+pub mod player_model;
+pub mod server_list;
+pub mod session;
+pub mod skin_cache;
+pub mod state;
+pub mod tick;

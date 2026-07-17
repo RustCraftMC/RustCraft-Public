@@ -1,0 +1,296 @@
+RustCraft Noncommercial Source-Available License
+Version 1.0
+
+Copyright (c) 2026 RustCraft Contributors
+All rights reserved except as expressly granted under this License.
+
+
+1. DEFINITIONS
+
+"Software" means the RustCraft source code, documentation, and original assets
+distributed with this License.
+
+"Licensor" means the copyright holder or copyright holders of the Software.
+
+"You" means any individual or legal entity exercising permissions granted by
+this License.
+
+"Modified Version" means any work that modifies, adapts, extends, translates,
+incorporates, or is otherwise derived from substantial portions of the
+Software.
+
+"Commercial Use" means use of the Software or a Modified Version primarily
+intended for commercial advantage, monetary compensation, or revenue-generating
+activity.
+
+"Distribution" means providing, publishing, sharing, transferring, sublicensing,
+or otherwise making the Software or a Modified Version available to any third
+party.
+
+"Corresponding Source" means the complete source code necessary to build,
+modify, and reproduce a distributed version of the Software, excluding
+third-party dependencies that are normally obtained separately.
+
+
+2. GRANT OF PERMISSION
+
+Subject to the terms and conditions of this License, the Licensor grants You
+a non-exclusive, worldwide, royalty-free, non-transferable license to:
+
+a. View and study the source code of the Software.
+
+b. Use the Software for personal, educational, research, experimental, and
+   other noncommercial purposes.
+
+c. Copy the Software for noncommercial purposes.
+
+d. Modify the Software for personal and noncommercial purposes.
+
+e. Create and maintain private Modified Versions for personal and
+   noncommercial use.
+
+f. Distribute the Software or Modified Versions only when all requirements of
+   this License are satisfied.
+
+
+3. NONCOMMERCIAL USE ONLY
+
+The Software and any Modified Version may not be used for Commercial Use
+without separate written permission from the Licensor.
+
+Prohibited Commercial Use includes, but is not limited to:
+
+a. Selling the Software or a Modified Version.
+
+b. Selling licenses, access, downloads, builds, or copies of the Software or a
+   Modified Version.
+
+c. Including the Software or a Modified Version as part of a paid product,
+   service, subscription, or commercial package.
+
+d. Providing paid hosting or cloud services primarily based on the Software.
+
+e. Using the Software or a Modified Version primarily to generate commercial
+   revenue.
+
+f. Selling modifications, features, plugins, distributions, or services that
+   substantially incorporate or depend upon the Software.
+
+g. Using the Software as part of a proprietary commercial product without
+   separate written permission from the Licensor.
+
+Noncommercial donations and sponsorships are permitted only when they do not
+provide exclusive software features, paid access, commercial licenses, or
+other direct commercial benefits relating to the Software.
+
+When there is uncertainty about whether a particular use constitutes
+Commercial Use, written permission from the Licensor must be obtained before
+such use.
+
+
+4. PRIVATE MODIFICATION
+
+You may privately modify the Software and store such modifications in private
+repositories for personal and noncommercial development.
+
+You are not required to publicly disclose a Modified Version that is used
+solely by You and is not Distributed to any third party.
+
+Once a Modified Version is Distributed to any third party, the source
+availability requirements in Section 5 apply.
+
+This means that private development is permitted, but closed-source
+Distribution is not permitted.
+
+
+5. SOURCE CODE REQUIREMENT FOR DISTRIBUTION
+
+If You Distribute a Modified Version of the Software to any third party, You
+must make the complete Corresponding Source of that exact distributed version
+publicly available.
+
+The Corresponding Source must:
+
+a. Be publicly accessible without requiring individual approval or special
+   permission.
+
+b. Be available without payment.
+
+c. Include all modifications made to the original Software.
+
+d. Include the source code reasonably necessary to build and reproduce the
+   distributed version.
+
+e. Clearly identify that the Software has been modified.
+
+f. Retain all applicable copyright notices.
+
+g. Include an unmodified copy of this License.
+
+The Corresponding Source must remain publicly available for as long as the
+Modified Version continues to be publicly Distributed by You.
+
+Distribution of binaries, executables, compiled packages, installers, or other
+non-source forms of a Modified Version without providing the Corresponding
+Source as required by this section is prohibited.
+
+
+6. NO CLOSED-SOURCE DISTRIBUTION
+
+You may not Distribute a Modified Version of the Software as closed-source or
+proprietary software.
+
+You may not impose legal terms, access restrictions, or technical measures
+that prevent recipients from accessing the Corresponding Source required under
+Section 5.
+
+You may not use a private repository as the sole source-code location for a
+Modified Version that has been Distributed to third parties.
+
+A publicly Distributed Modified Version must have its Corresponding Source
+available in a publicly accessible source repository or equivalent public
+location.
+
+
+7. LICENSE PRESERVATION
+
+Any permitted Distribution of the Software or a Modified Version must include
+an unmodified copy of this License.
+
+You may not remove or intentionally conceal copyright notices, license notices,
+or attribution notices contained in the Software.
+
+Modified Versions must clearly state that they are modified versions and must
+not represent themselves as official releases of RustCraft.
+
+
+8. RUSTCRAFT NAME AND BRANDING
+
+This License does not grant permission to represent a Modified Version as an
+official RustCraft release.
+
+The RustCraft name may be used solely as reasonably necessary to describe the
+origin of a Modified Version, such as:
+
+"Based on the RustCraft project."
+
+You may not use RustCraft names, logos, icons, or branding in a manner that
+falsely implies endorsement, sponsorship, affiliation, or official status.
+
+Any rights in RustCraft trademarks or branding that may exist are not granted
+by this License except for reasonable descriptive use.
+
+
+9. THIRD-PARTY CONTENT
+
+This License applies only to source code and assets for which the RustCraft
+copyright holders have the authority to grant rights.
+
+This License does not grant any rights to third-party content.
+
+In particular, Minecraft-related content owned by, licensed to, or originating
+from Mojang Studios, Microsoft, or other third parties is not licensed under
+this License.
+
+Such third-party content may include, but is not limited to:
+
+- Minecraft textures;
+- sounds and music;
+- language files;
+- resource indexes;
+- asset objects;
+- skins;
+- models;
+- game data;
+- fonts;
+- trademarks;
+- other copyrighted game assets.
+
+The presence of third-party content in a development environment, build,
+distribution, or repository does not cause that content to become licensed
+under this License.
+
+Users and distributors are solely responsible for obtaining and using
+third-party content in accordance with applicable licenses, agreements, terms
+of service, and laws.
+
+RustCraft is an independent project and is not affiliated with, endorsed by,
+sponsored by, or officially associated with Mojang Studios or Microsoft.
+
+Minecraft is a trademark of Microsoft Corporation.
+
+
+10. SEPARATE COMMERCIAL LICENSING
+
+The Licensor may grant separate licenses for uses that are not permitted under
+this License.
+
+Such separate licenses may permit, among other things:
+
+- Commercial Use;
+- proprietary use;
+- closed-source Distribution;
+- commercial integration;
+- commercial hosting;
+- other separately negotiated rights.
+
+A separate license must be granted in writing by the Licensor.
+
+The existence of a separately licensed version does not modify the terms of
+this License for other users.
+
+
+11. CONTRIBUTIONS
+
+Unless otherwise agreed in writing, contributions intentionally submitted to
+the RustCraft project for inclusion in the Software may be distributed as part
+of RustCraft under this License.
+
+Contributors retain any copyright they hold in their original contributions.
+
+By intentionally submitting a contribution for inclusion in RustCraft, a
+contributor represents that they have the right to submit that contribution
+under terms compatible with this License.
+
+
+12. NO WARRANTY
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+IN NO EVENT SHALL THE AUTHORS, COPYRIGHT HOLDERS, OR CONTRIBUTORS BE LIABLE FOR
+ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT,
+OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE
+USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+13. TERMINATION
+
+Your rights under this License automatically terminate if You materially
+violate its terms.
+
+Upon termination, You must cease any use, modification, or Distribution that
+is not otherwise permitted by applicable law or by separate written permission
+from the Licensor.
+
+Termination does not affect the rights of recipients who previously received
+the Software or a Modified Version in compliance with this License, provided
+that those recipients continue to comply with its terms.
+
+
+14. NO IMPLIED RIGHTS
+
+No rights are granted except those expressly stated in this License.
+
+The Licensor reserves all rights not expressly granted herein.
+
+
+15. ACCEPTANCE
+
+By exercising any permission granted under this License, including using,
+copying, modifying, or Distributing the Software, You acknowledge that You have
+read and agree to comply with the terms of this License.
+
+
+END OF TERMS AND CONDITIONS

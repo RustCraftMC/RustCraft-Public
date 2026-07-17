@@ -1,0 +1,16 @@
+{
+  "id": "old_animations",
+  "name": "Old Animations",
+  "version": "1.0.0",
+  "api_version": 1,
+  "entrypoints": {
+    "client": "scripts/client.lua"
+  },
+  "permissions": [
+    "animation.modify",
+    "render.read",
+    "render.custom_draw",
+    "client.read",
+    "input.observe"
+  ]
+}

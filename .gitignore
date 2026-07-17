@@ -1,0 +1,12 @@
+/target/
+/rustcraft.exe
+/rustcraft.pdb
+options.json
+servers.json
+/auth_accounts.json
+/assets/skins/
+/mods/*/data/
+/minecraft/Grim-2.0/
+/mods/*/config.json
+/logs/
+/assets/capes/
