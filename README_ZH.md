@@ -1,11 +1,11 @@
 # RustCraft
 
-[![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](https://www.rust-lang.org/)  
-[![Vulkan](https://img.shields.io/badge/Renderer-Vulkan-blue)](https://chatgpt.com/c/6a59e0a4-7d3c-83e9-a6c2-7fd31e387b6e#)  
-[![Protocol](https://img.shields.io/badge/Minecraft-1.8.9%20\(protocol%2047\)-green)](https://chatgpt.com/c/6a59e0a4-7d3c-83e9-a6c2-7fd31e387b6e#)  
-[![Build](https://img.shields.io/badge/Build-Cargo-informational)](https://chatgpt.com/c/6a59e0a4-7d3c-83e9-a6c2-7fd31e387b6e#)
+[![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](https://www.rust-lang.org/)
+[![Vulkan](https://img.shields.io/badge/Renderer-Vulkan-blue)](#)
+[![Protocol](https://img.shields.io/badge/Minecraft-1.8.9%20(protocol%2047)-green)](#)
+[![Build](https://img.shields.io/badge/Build-Cargo-informational)](#)
 
-[English](https://chatgpt.com/c/README.md) | **简体中文**
+[English](README.md) | **简体中文**
 
 > 一个使用 Rust 从零重新实现、基于 Vulkan 渲染器的 Minecraft 1.8.9 客户端。
 
@@ -431,4 +431,4 @@ RustCraft 使用 **RustCraft Noncommercial Source-Available License** 进行授�
 
 - Minecraft 原版资源及其他第三方资源不受 RustCraft 许可证授权
 
-完整许可证条款请参阅 [LICENSE](https://chatgpt.com/c/LICENSE) 文件。
+完整许可证条款请参阅 [LICENSE](LICENSE) 文件。

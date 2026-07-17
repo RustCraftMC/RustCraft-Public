@@ -1,11 +1,11 @@
 # RustCraft
 
-[![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](https://www.rust-lang.org/)  
-[![Vulkan](https://img.shields.io/badge/Renderer-Vulkan-blue)](https://chatgpt.com/c/6a59e0a4-7d3c-83e9-a6c2-7fd31e387b6e#)  
-[![Protocol](https://img.shields.io/badge/Minecraft-1.8.9%20\(protocol%2047\)-green)](https://chatgpt.com/c/6a59e0a4-7d3c-83e9-a6c2-7fd31e387b6e#)  
-[![Build](https://img.shields.io/badge/Build-Cargo-informational)](https://chatgpt.com/c/6a59e0a4-7d3c-83e9-a6c2-7fd31e387b6e#)
+[![Rust](https://img.shields.io/badge/Rust-2021-orange?logo=rust)](https://www.rust-lang.org/)
+[![Vulkan](https://img.shields.io/badge/Renderer-Vulkan-blue)](#)
+[![Protocol](https://img.shields.io/badge/Minecraft-1.8.9%20(protocol%2047)-green)](#)
+[![Build](https://img.shields.io/badge/Build-Cargo-informational)](#)
 
-**English** | [简体中文](https://chatgpt.com/c/README_ZH.md)
+**English** | [简体中文](README_ZH.md)
 
 > A Minecraft 1.8.9 client reimplementation built from scratch in Rust with a Vulkan renderer.
 
@@ -431,4 +431,4 @@ In summary:
 
 - Minecraft-owned and other third-party assets are not covered by the RustCraft license.
 
-See the [LICENSE](https://chatgpt.com/c/LICENSE) file for the complete license terms.
+See the [LICENSE](LICENSE) file for the complete license terms.
