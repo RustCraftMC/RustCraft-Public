@@ -141,9 +141,15 @@ jobs:
               /NJS `
               /NP
 
-            if ($LASTEXITCODE -ge 8) {
-              throw "Failed to copy RustCraft assets. Robocopy exit code: $LASTEXITCODE"
+            $robocopyExitCode = $LASTEXITCODE
+
+            # Robocopy returns 0-7 for successful copy outcomes. Clear its
+            # non-zero success code so GitHub Actions does not fail this step.
+            if ($robocopyExitCode -ge 8) {
+              throw "Failed to copy RustCraft assets. Robocopy exit code: $robocopyExitCode"
             }
+
+            $global:LASTEXITCODE = 0
           }
 
           # Create resource pack directory
