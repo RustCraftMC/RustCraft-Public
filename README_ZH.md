@@ -7,6 +7,16 @@
 
 [English](README.md) | **简体中文**
 
+## Star History
+
+<a href="https://www.star-history.com/?repos=RustCraftMC%2FRustCraft-Public&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=RustCraftMC/RustCraft-Public&type=date&theme=dark&legend=top-left&sealed_token=grGCoVN8LZatfwjgJlrVzd7-9Te6P94gd4VFAcvN-nSB2CeJDFhton4LyL0svRIo6uEL8_j1zTlMVynfQcrdcvGO66C1fW55YBdXpWu_vZ4dmJDyosTWP1Wt1lYf3gsGf9-SjCMoBoCJj7SgGRU_RN0ZKcC2YcO7jIbBZ6uaW3RAsMsy9-K8XIXHpCqG" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=RustCraftMC/RustCraft-Public&type=date&legend=top-left&sealed_token=grGCoVN8LZatfwjgJlrVzd7-9Te6P94gd4VFAcvN-nSB2CeJDFhton4LyL0svRIo6uEL8_j1zTlMVynfQcrdcvGO66C1fW55YBdXpWu_vZ4dmJDyosTWP1Wt1lYf3gsGf9-SjCMoBoCJj7SgGRU_RN0ZKcC2YcO7jIbBZ6uaW3RAsMsy9-K8XIXHpCqG" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=RustCraftMC/RustCraft-Public&type=date&legend=top-left&sealed_token=grGCoVN8LZatfwjgJlrVzd7-9Te6P94gd4VFAcvN-nSB2CeJDFhton4LyL0svRIo6uEL8_j1zTlMVynfQcrdcvGO66C1fW55YBdXpWu_vZ4dmJDyosTWP1Wt1lYf3gsGf9-SjCMoBoCJj7SgGRU_RN0ZKcC2YcO7jIbBZ6uaW3RAsMsy9-K8XIXHpCqG" />
+ </picture>
+</a>
+
 > 一个使用 Rust 从零重新实现、基于 Vulkan 渲染器的 Minecraft 1.8.9 客户端。
 
 RustCraft 是一个实验性的 **Minecraft Java Edition 1.8.9 客户端重新实现项目**，主要使用 **Rust 2021** 编写，并采用自研的 **Vulkan** 渲染引擎。
