@@ -7,6 +7,10 @@
 
 **English** | [简体中文](README_ZH.md)
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=RustCraftMC/RustCraft-Public&type=Date)](https://star-history.com/#RustCraftMC/RustCraft-Public)
+
 > A Minecraft 1.8.9 client reimplementation built from scratch in Rust with a Vulkan renderer.
 
 RustCraft is an experimental reimplementation of the **Minecraft Java Edition 1.8.9 client**, written primarily in **Rust 2021** and powered by a custom **Vulkan** rendering engine.
