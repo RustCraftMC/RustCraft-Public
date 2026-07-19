@@ -9,7 +9,13 @@
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=RustCraftMC/RustCraft-Public&type=Date)](https://star-history.com/#RustCraftMC/RustCraft-Public)
+<a href="https://www.star-history.com/?repos=RustCraftMC%2FRustCraft-Public&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=RustCraftMC/RustCraft-Public&type=date&theme=dark&legend=top-left&sealed_token=grGCoVN8LZatfwjgJlrVzd7-9Te6P94gd4VFAcvN-nSB2CeJDFhton4LyL0svRIo6uEL8_j1zTlMVynfQcrdcvGO66C1fW55YBdXpWu_vZ4dmJDyosTWP1Wt1lYf3gsGf9-SjCMoBoCJj7SgGRU_RN0ZKcC2YcO7jIbBZ6uaW3RAsMsy9-K8XIXHpCqG" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=RustCraftMC/RustCraft-Public&type=date&legend=top-left&sealed_token=grGCoVN8LZatfwjgJlrVzd7-9Te6P94gd4VFAcvN-nSB2CeJDFhton4LyL0svRIo6uEL8_j1zTlMVynfQcrdcvGO66C1fW55YBdXpWu_vZ4dmJDyosTWP1Wt1lYf3gsGf9-SjCMoBoCJj7SgGRU_RN0ZKcC2YcO7jIbBZ6uaW3RAsMsy9-K8XIXHpCqG" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=RustCraftMC/RustCraft-Public&type=date&legend=top-left&sealed_token=grGCoVN8LZatfwjgJlrVzd7-9Te6P94gd4VFAcvN-nSB2CeJDFhton4LyL0svRIo6uEL8_j1zTlMVynfQcrdcvGO66C1fW55YBdXpWu_vZ4dmJDyosTWP1Wt1lYf3gsGf9-SjCMoBoCJj7SgGRU_RN0ZKcC2YcO7jIbBZ6uaW3RAsMsy9-K8XIXHpCqG" />
+ </picture>
+</a>
 
 > A Minecraft 1.8.9 client reimplementation built from scratch in Rust with a Vulkan renderer.
 
