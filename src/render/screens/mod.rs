@@ -645,7 +645,15 @@ impl Renderer {
                         text.bool_label(self.state.settings.weather_effects())
                     ),
                 ),
-                OptionControl::single(0, String::new()),
+                OptionControl::slider(
+                    btn::BRIGHTNESS_DOWN,
+                    format!(
+                        "{}: {}",
+                        text.get("options.gamma"),
+                        gamma_label(&text, self.state.settings.gamma())
+                    ),
+                    self.state.settings.gamma().clamp(0.0, 1.0),
+                ),
             ),
             (
                 OptionControl::single(
@@ -1541,6 +1549,16 @@ fn fov_label(text: &crate::ui::text::UiText, value: f32) -> String {
         text.get("options.fov.max").to_string()
     } else {
         format!("{:.0}", value)
+    }
+}
+
+fn gamma_label(text: &crate::ui::text::UiText, value: f32) -> String {
+    if value <= 0.0 {
+        text.get("options.gamma.min").to_string()
+    } else if value >= 1.0 {
+        text.get("options.gamma.max").to_string()
+    } else {
+        format!("{:.0}%", (value * 100.0).round())
     }
 }
 

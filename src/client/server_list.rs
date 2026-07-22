@@ -158,7 +158,23 @@ fn default_path() -> PathBuf {
 
 fn query_status(address: &str) -> io::Result<ServerStatus> {
     let (host, port) = parse_addr(address);
-    let mut stream = TcpStream::connect((host, port))?;
+    let addr = format!("{host}:{port}");
+    let mut last_err = None;
+    let mut stream = None;
+    for sock in std::net::ToSocketAddrs::to_socket_addrs(&addr)? {
+        match TcpStream::connect_timeout(&sock, Duration::from_millis(800)) {
+            Ok(s) => {
+                stream = Some(s);
+                break;
+            }
+            Err(e) => last_err = Some(e),
+        }
+    }
+    let mut stream = stream.ok_or_else(|| {
+        last_err.unwrap_or_else(|| {
+            io::Error::new(io::ErrorKind::ConnectionRefused, format!("status query failed for {addr}"))
+        })
+    })?;
     stream.set_read_timeout(Some(Duration::from_millis(800)))?;
     stream.set_write_timeout(Some(Duration::from_millis(800)))?;
 

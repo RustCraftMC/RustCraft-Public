@@ -35,6 +35,9 @@ pub struct ClientConfig {
     /// Virtual cursor speed in menus and inventories, 0.0..=1.0.
     pub gamepad_cursor_speed: f32,
     pub fov: f32,
+    /// Vanilla `GameSettings.gamma` / Brightness option, normalized to 0.0..=1.0.
+    #[serde(default)]
+    pub gamma: f32,
     pub max_framerate: u32,
     pub clouds: bool,
     #[serde(default = "default_weather_effects")]
@@ -155,6 +158,7 @@ impl Default for ClientConfig {
             // controllable default of 3 px/frame at full stick deflection.
             gamepad_cursor_speed: 0.25,
             fov: 70.0,
+            gamma: 0.0,
             max_framerate: 165,
             clouds: true,
             weather_effects: true,

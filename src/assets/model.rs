@@ -664,17 +664,20 @@ fn rotate_facedir(d: FaceDir, x_rot_deg: f32, y_rot_deg: f32) -> FaceDir {
 
 // ── helpers used by bake_elements ──
 
+/// Rotate face UVs by remapping which corner is assigned to each vertex.
+///
+/// Vanilla `BlockFaceUV.getVertexRotated` cycles the four UV corners among the
+/// face vertices (`(vertex + rotation/90) % 4`). Coordinate-space transforms
+/// like `(u,v) -> (1-v,u)` only work for full 0..1 quads and flip piston side
+/// strips (and other partial UVs) front-to-back.
 fn rotate_uvs_90(uvs: [[f32; 2]; 4], amount: u16) -> [[f32; 2]; 4] {
     let steps = (amount / 90) % 4;
     if steps == 0 {
         return uvs;
     }
-    let mut result = uvs;
-    for _ in 0..steps {
-        let prev = result;
-        for i in 0..4 {
-            result[i] = [1.0 - prev[i][1], prev[i][0]];
-        }
+    let mut result = [[0.0; 2]; 4];
+    for i in 0..4 {
+        result[i] = uvs[(i + steps as usize) % 4];
     }
     result
 }
@@ -823,5 +826,40 @@ mod tests {
         assert_vec3_close(rotate_vertex([16.0, 8.0, 8.0], 0.0, 90.0), [8.0, 8.0, 16.0]);
         assert_vec3_close(rotate_normal([1.0, 0.0, 0.0], 0.0, 90.0), [0.0, 0.0, 1.0]);
         assert_vec3_close(rotate_normal([0.0, 1.0, 0.0], 90.0, 0.0), [0.0, 0.0, -1.0]);
+    }
+
+    #[test]
+    fn face_uv_rotation_cycles_corners_like_vanilla() {
+        // Explicit full-tile UVs as produced by bake_elements for uv [0,0,16,16]:
+        // V0 bottom-left, V1 bottom-right, V2 top-right, V3 top-left in texture space.
+        let base = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
+        assert_eq!(rotate_uvs_90(base, 0), base);
+        assert_eq!(
+            rotate_uvs_90(base, 90),
+            [[1.0, 1.0], [1.0, 0.0], [0.0, 0.0], [0.0, 1.0]]
+        );
+        assert_eq!(
+            rotate_uvs_90(base, 180),
+            [[1.0, 0.0], [0.0, 0.0], [0.0, 1.0], [1.0, 1.0]]
+        );
+        assert_eq!(
+            rotate_uvs_90(base, 270),
+            [[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]
+        );
+    }
+
+    #[test]
+    fn piston_side_face_rotation_keeps_strip_corners() {
+        // piston.json / piston_head.json: west rotation 270, east rotation 90.
+        // Partial side strip uv [0,0,16,4] must cycle corners, not spin around 0.5.
+        let side_strip = [[0.0, 0.25], [1.0, 0.25], [1.0, 0.0], [0.0, 0.0]];
+        assert_eq!(
+            rotate_uvs_90(side_strip, 270),
+            [[0.0, 0.0], [0.0, 0.25], [1.0, 0.25], [1.0, 0.0]]
+        );
+        assert_eq!(
+            rotate_uvs_90(side_strip, 90),
+            [[1.0, 0.25], [1.0, 0.0], [0.0, 0.0], [0.0, 0.25]]
+        );
     }
 }

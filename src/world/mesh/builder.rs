@@ -268,7 +268,9 @@ pub fn build_chunk_mesh(
                 // BlockSkull has no baked block model in vanilla. Its complete
                 // geometry and texture are supplied by TileEntitySkullRenderer;
                 // emitting the fallback shape here creates a stone placeholder.
-                if block == Block::Skull {
+                // BlockPistonMoving (id 36) is the same class of placeholder:
+                // vanilla draws the stored block via TileEntityPistonRenderer.
+                if matches!(block, Block::Skull | Block::PistonExtension) {
                     continue;
                 }
 
@@ -1636,6 +1638,38 @@ mod tests {
             |x, y, z| {
                 if (x, y, z) == (1, 1, 1) {
                     state(Block::Skull, 0)
+                } else {
+                    0
+                }
+            },
+            MeshOptions::default(),
+        );
+
+        assert!(mesh.vertices.is_empty());
+        assert!(mesh.indices.is_empty());
+    }
+
+    #[test]
+    fn moving_piston_placeholder_emits_no_static_mesh() {
+        assert_eq!(Block::from_id(36), Block::PistonExtension);
+        assert_eq!(Block::PistonExtension.to_id(), 36);
+
+        let mut chunk = Chunk::new(0, 0);
+        chunk.set(1, 1, 1, Block::PistonExtension);
+
+        let mesh = build_chunk_mesh(
+            &chunk,
+            |x, y, z| {
+                if (x, y, z) == (1, 1, 1) {
+                    Block::PistonExtension
+                } else {
+                    Block::Air
+                }
+            },
+            |_, _, _| LightLevel { sky: 15, block: 0 },
+            |x, y, z| {
+                if (x, y, z) == (1, 1, 1) {
+                    state(Block::PistonExtension, 1)
                 } else {
                     0
                 }

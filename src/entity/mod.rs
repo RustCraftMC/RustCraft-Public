@@ -372,7 +372,9 @@ pub struct Animation {
     pub swing_time: f32,
     pub critical_time: f32,
     pub limb_swing: f32,
+    pub prev_limb_swing: f32,
     pub limb_swing_amount: f32,
+    pub prev_limb_swing_amount: f32,
     pub distance_walked_modified: f32,
     pub prev_distance_walked_modified: f32,
     pub camera_yaw: f32,
@@ -480,7 +482,9 @@ pub struct Entity {
     pub swing_time: f32,
     pub critical_time: f32,
     pub limb_swing: f32,
+    pub prev_limb_swing: f32,
     pub limb_swing_amount: f32,
+    pub prev_limb_swing_amount: f32,
     pub distance_walked_modified: f32,
     pub prev_distance_walked_modified: f32,
     pub camera_yaw: f32,
@@ -648,7 +652,9 @@ impl Entity {
             swing_time: 0.0,
             critical_time: 0.0,
             limb_swing: 0.0,
+            prev_limb_swing: 0.0,
             limb_swing_amount: 0.0,
+            prev_limb_swing_amount: 0.0,
             distance_walked_modified: 0.0,
             prev_distance_walked_modified: 0.0,
             camera_yaw: 0.0,
@@ -1363,11 +1369,9 @@ impl Entity {
         let dx = self.position.x - self.prev_position.x;
         let dz = self.position.z - self.prev_position.z;
         let horizontal_distance = (dx * dx + dz * dz).sqrt();
-        let target_amount = if dt > f32::EPSILON {
-            (horizontal_distance / dt * 0.25).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
+        let target_amount = (horizontal_distance * 3.0).clamp(0.0, 1.0);
+        self.prev_limb_swing = self.limb_swing;
+        self.prev_limb_swing_amount = self.limb_swing_amount;
         self.limb_swing_amount += (target_amount - self.limb_swing_amount) * 0.4;
         self.limb_swing += self.limb_swing_amount;
         self.prev_distance_walked_modified = self.distance_walked_modified;
@@ -1619,7 +1623,9 @@ impl<'a> Drop for EntityMut<'a> {
             anim.swing_time = self.entity.swing_time;
             anim.critical_time = self.entity.critical_time;
             anim.limb_swing = self.entity.limb_swing;
+            anim.prev_limb_swing = self.entity.prev_limb_swing;
             anim.limb_swing_amount = self.entity.limb_swing_amount;
+            anim.prev_limb_swing_amount = self.entity.prev_limb_swing_amount;
             anim.distance_walked_modified = self.entity.distance_walked_modified;
             anim.prev_distance_walked_modified = self.entity.prev_distance_walked_modified;
             anim.camera_yaw = self.entity.camera_yaw;
@@ -1753,7 +1759,9 @@ impl EntityManager {
             swing_time: anim.swing_time,
             critical_time: anim.critical_time,
             limb_swing: anim.limb_swing,
+            prev_limb_swing: anim.prev_limb_swing,
             limb_swing_amount: anim.limb_swing_amount,
+            prev_limb_swing_amount: anim.prev_limb_swing_amount,
             distance_walked_modified: anim.distance_walked_modified,
             prev_distance_walked_modified: anim.prev_distance_walked_modified,
             camera_yaw: anim.camera_yaw,
@@ -1813,7 +1821,9 @@ impl EntityManager {
                 swing_time: entity.swing_time,
                 critical_time: entity.critical_time,
                 limb_swing: entity.limb_swing,
+                prev_limb_swing: entity.prev_limb_swing,
                 limb_swing_amount: entity.limb_swing_amount,
+                prev_limb_swing_amount: entity.prev_limb_swing_amount,
                 distance_walked_modified: entity.distance_walked_modified,
                 prev_distance_walked_modified: entity.prev_distance_walked_modified,
                 camera_yaw: entity.camera_yaw,
@@ -1884,7 +1894,9 @@ impl EntityManager {
             anim.swing_time = entity.swing_time;
             anim.critical_time = entity.critical_time;
             anim.limb_swing = entity.limb_swing;
+            anim.prev_limb_swing = entity.prev_limb_swing;
             anim.limb_swing_amount = entity.limb_swing_amount;
+            anim.prev_limb_swing_amount = entity.prev_limb_swing_amount;
             anim.distance_walked_modified = entity.distance_walked_modified;
             anim.prev_distance_walked_modified = entity.prev_distance_walked_modified;
             anim.camera_yaw = entity.camera_yaw;

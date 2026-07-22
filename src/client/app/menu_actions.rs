@@ -7,8 +7,15 @@ use winit::event_loop::ActiveEventLoop;
 
 impl App {
     pub(super) fn connect_to_configured_server(&mut self) {
-        if self.net_ctrl.connection.is_some() || self.net_ctrl.connect_task.is_some() {
-            return;
+        // Drop any in-flight connect first so a double-click / rapid retry
+        // cannot leave multiple TCP connect threads racing.
+        if self.net_ctrl.connect_task.is_some() {
+            log::warn!("cancelling previous connect task before starting a new one");
+            self.net_ctrl.connect_task = None;
+        }
+        if let Some(conn) = self.net_ctrl.connection.take() {
+            conn.close();
+            drop(conn);
         }
         let addr = if matches!(self.state, GameState::Multiplayer) {
             self.servers
@@ -53,7 +60,11 @@ impl App {
                 // Drop renderer while window is still alive so Vulkan surface
                 // cleanup doesn't access a destroyed window handle.
                 self.renderer = None;
-                self.net_ctrl.connection = None;
+                self.net_ctrl.connect_task = None;
+                if let Some(conn) = self.net_ctrl.connection.take() {
+                    conn.close();
+                    drop(conn);
+                }
                 event_loop.exit();
             }
             btn::MULTIPLAYER => {
@@ -334,6 +345,14 @@ impl App {
                 self.config.fov = (self.config.fov + 5.0).min(110.0);
                 self.config.save_default();
             }
+            btn::BRIGHTNESS_DOWN => {
+                self.config.gamma = (self.config.gamma - 0.05).max(0.0);
+                self.config.save_default();
+            }
+            btn::BRIGHTNESS_UP => {
+                self.config.gamma = (self.config.gamma + 0.05).min(1.0);
+                self.config.save_default();
+            }
             btn::FRAMERATE_DOWN => {
                 self.config.max_framerate = previous_framerate(self.config.max_framerate);
                 self.config.save_default();
@@ -577,7 +596,6 @@ impl App {
             }
             btn::DIRECT_ADDRESS_FIELD => {}
             btn::CONNECT => {
-                self.net_ctrl.connection = None;
                 self.state = GameState::Connecting;
                 self.connect_to_configured_server();
                 self.input_ctrl.mouse_captured = false;
@@ -628,7 +646,6 @@ impl App {
                             });
                     self.last_server_click = Some((idx, now));
                     if double_clicked {
-                        self.net_ctrl.connection = None;
                         self.state = GameState::Connecting;
                         self.connect_to_configured_server();
                         self.input_ctrl.mouse_captured = false;
@@ -842,6 +859,11 @@ impl App {
                 self.config.save_default();
                 true
             }
+            btn::BRIGHTNESS_DOWN => {
+                self.config.gamma = value.clamp(0.0, 1.0);
+                self.config.save_default();
+                true
+            }
             btn::FRAMERATE_DOWN => {
                 self.config.max_framerate = slider_to_framerate(value);
                 self.config.save_default();
@@ -992,7 +1014,13 @@ impl App {
         self.inventory_open = false;
         self.inventory_action_number = 0;
         self.unload_server_state();
-        self.net_ctrl.connection = None;
+        // Abort any in-flight connect so a failed join cannot keep spawning
+        // TCP handshakes after we already left the Connecting screen.
+        self.net_ctrl.connect_task = None;
+        if let Some(conn) = self.net_ctrl.connection.take() {
+            conn.close();
+            drop(conn);
+        }
         self.scripts.notify_disconnect(reason);
         self.state = GameState::Disconnected {
             reason: reason.to_string(),
@@ -1010,7 +1038,11 @@ impl App {
         self.block_hit_delay = 0;
         self.inventory_open = false;
         self.inventory_action_number = 0;
-        self.net_ctrl.connection = None;
+        self.net_ctrl.connect_task = None;
+        if let Some(conn) = self.net_ctrl.connection.take() {
+            conn.close();
+            drop(conn);
+        }
         self.scripts.set_connection_active(false);
         self.input_ctrl.mouse_captured = false;
         self.set_cursor_captured(false);

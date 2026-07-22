@@ -14,6 +14,7 @@ layout(set = 0, binding = 0) uniform Uniforms {
     vec4 fog_color;
     vec4 fog_params;
     vec4 grass_color;
+    vec4 lightmap_params;
 };
 
 layout(set = 0, binding = 1) uniform sampler2D tex_sampler;

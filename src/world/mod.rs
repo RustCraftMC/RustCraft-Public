@@ -17,11 +17,11 @@ use mesh::{ChunkMesh, MeshOptions};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{mpsc, Arc, Mutex};
 
-const MAX_NORMAL_BACKGROUND_MESH_JOBS: usize = 6;
-const MAX_PRIORITY_BACKGROUND_MESH_JOBS: usize = 2;
+const MAX_NORMAL_BACKGROUND_MESH_JOBS: usize = 16;
+const MAX_PRIORITY_BACKGROUND_MESH_JOBS: usize = 4;
 const MAX_MESH_RESULTS_PER_FRAME: usize =
-    MAX_NORMAL_BACKGROUND_MESH_JOBS + MAX_PRIORITY_BACKGROUND_MESH_JOBS;
-const MAX_MESH_REMOVALS_PER_FRAME: usize = 16;
+    MAX_NORMAL_BACKGROUND_MESH_JOBS + MAX_PRIORITY_BACKGROUND_MESH_JOBS + 16;
+const MAX_MESH_REMOVALS_PER_FRAME: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct MeshJobToken {
@@ -497,6 +497,17 @@ impl World {
         self.light_at(wx, wy, wz)
     }
 
+    pub fn biome_at(&self, wx: i32, wz: i32) -> u8 {
+        let cx = wx.div_euclid(CHUNK_SIZE as i32);
+        let cz = wz.div_euclid(CHUNK_SIZE as i32);
+        let lx = wx.rem_euclid(CHUNK_SIZE as i32) as usize;
+        let lz = wz.rem_euclid(CHUNK_SIZE as i32) as usize;
+        self.chunks
+            .get(&(cx, cz))
+            .map(|chunk| chunk.biome(lx, lz))
+            .unwrap_or(1)
+    }
+
     pub fn set_smooth_lighting(&mut self, enabled: bool) {
         self.mesh_options.smooth_lighting = enabled;
     }
@@ -608,6 +619,10 @@ impl World {
     /// Populate the pending mesh queue with all current chunks.
     /// Called once when transitioning from LoadingWorld to Playing.
     pub fn enqueue_all_chunks_for_mesh(&mut self) {
+        self.enqueue_all_chunks_for_mesh_near(0, 0);
+    }
+
+    pub fn enqueue_all_chunks_for_mesh_near(&mut self, player_cx: i32, player_cz: i32) {
         self.advance_mesh_epoch();
         self.pending_mesh_queue.clear();
         self.pending_mesh_priority_queue.clear();
@@ -616,9 +631,19 @@ impl World {
         self.pending_mesh_dirty.clear();
         self.pending_mesh_priority_inflight.clear();
         self.pending_mesh_priority_dirty.clear();
-        let chunks: Vec<(i32, i32)> = self.chunks.keys().copied().collect();
-        for (cx, cz) in chunks {
-            self.enqueue_chunk_mesh(cx, cz);
+        let mut chunks: Vec<(i32, i32)> = self.chunks.keys().copied().collect();
+        chunks.sort_by_key(|(cx, cz)| {
+            let dx = i64::from(*cx) - i64::from(player_cx);
+            let dz = i64::from(*cz) - i64::from(player_cz);
+            dx * dx + dz * dz
+        });
+        let priority_count = chunks.len().min(81);
+        for (i, (cx, cz)) in chunks.into_iter().enumerate() {
+            if i < priority_count {
+                self.enqueue_chunk_mesh_priority(cx, cz);
+            } else {
+                self.enqueue_chunk_mesh(cx, cz);
+            }
         }
     }
 

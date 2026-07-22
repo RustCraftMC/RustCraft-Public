@@ -79,3 +79,4 @@ Thumbs.db
 # Misc project-local paths
 # ---------------------------------------------------------------------------
 /minecraft/Grim-2.0/
+*.spv

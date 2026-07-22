@@ -547,6 +547,8 @@ fn get_mob_texture_definitions() -> Vec<(String, String)> {
         ),
         ("zombie_pigman".into(), "zombie_pigman.png".into()),
         ("witch".into(), "witch.png".into()),
+        ("minecart".into(), "minecart.png".into()),
+        ("boat".into(), "boat.png".into()),
         ("player".into(), "steve.png".into()),
         ("player_slim".into(), "alex.png".into()),
         // Hostile mobs

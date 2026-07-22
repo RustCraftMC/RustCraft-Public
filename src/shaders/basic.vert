@@ -16,6 +16,7 @@ layout(set = 0, binding = 0) uniform Uniforms {
     vec4 fog_color;
     vec4 fog_params;
     vec4 grass_color;
+    vec4 lightmap_params;
 };
 
 layout(push_constant) uniform PushConstants {
@@ -58,8 +59,25 @@ vec3 vanilla_lightmap(float sky_level, float block_level) {
         );
     }
 
+    float night_vision = clamp(lightmap_params.y, 0.0, 1.0);
+    if (night_vision > 0.0) {
+        float inv_scale = 1.0 / max(color.r, 1.0e-5);
+        inv_scale = min(inv_scale, 1.0 / max(color.g, 1.0e-5));
+        inv_scale = min(inv_scale, 1.0 / max(color.b, 1.0e-5));
+        color = color * (1.0 - night_vision) + color * inv_scale * night_vision;
+    }
+
     color = clamp(color, 0.0, 1.0);
-    return clamp(color * 0.96 + 0.03, 0.0, 1.0);
+
+    // EntityRenderer.updateLightmap gamma (1.8.9):
+    // c = c*(1-g) + (1-(1-c)^4)*g; then c = c*0.96+0.03
+    float gamma = clamp(lightmap_params.x, 0.0, 1.0);
+    vec3 inv = vec3(1.0) - color;
+    vec3 curved = vec3(1.0) - inv * inv * inv * inv;
+    color = color * (1.0 - gamma) + curved * gamma;
+    color = color * 0.96 + 0.03;
+
+    return clamp(color, 0.0, 1.0);
 }
 
 void main() {
@@ -100,12 +118,14 @@ void main() {
         v_color = vec4(1.0);
     }
 
-    // The sky direction points from the sun towards the world. Keep a modest
-    // ambient term so faces do not turn black, while the direct term follows
-    // the sun across the sky.
-    float face_brightness = 0.35 + 0.65 * max(dot(normalize(normal), -light_dir.xyz), 0.0);
+    // FaceBakery.getFaceBrightness (1.8.9): axis-fixed shade, not sun-dot.
+    // UP=1.0, DOWN=0.5, N/S=0.8, E/W=0.6.
+    vec3 n = normalize(normal);
+    float an = abs(n.y) >= abs(n.x) && abs(n.y) >= abs(n.z)
+        ? (n.y >= 0.0 ? 1.0 : 0.5)
+        : (abs(n.z) >= abs(n.x) ? 0.8 : 0.6);
     float ao = clamp(ambient_occlusion, 0.2, 1.0);
-    v_light_color = vanilla_lightmap(sky_light, block_light) * face_brightness * ao;
+    v_light_color = vanilla_lightmap(sky_light, block_light) * an * ao;
 
     vec4 view_pos = view * vec4(world_pos, 1.0);
     v_fog_dist = length(view_pos.xyz);

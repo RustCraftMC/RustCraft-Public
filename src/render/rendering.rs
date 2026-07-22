@@ -10,6 +10,36 @@ use crate::render::entity::mesh::EntityPose;
 use crate::render::sky::SkyGradient;
 use crate::world::chunk::CHUNK_SIZE;
 
+// MCP EntityRenderer.getNightVisionBrightness / updateFogColor (1.8.9).
+fn night_vision_strength(
+    effects: &[crate::entity::EntityEffectState],
+    partial_ticks: f32,
+) -> f32 {
+    let Some(effect) = effects.iter().find(|effect| effect.effect_id == 16) else {
+        return 0.0;
+    };
+    if effect.duration > 200 {
+        1.0
+    } else {
+        let t = effect.duration as f32 - partial_ticks;
+        0.7 + (t * std::f32::consts::PI * 0.2).sin() * 0.3
+    }
+}
+
+fn apply_night_vision_color(color: [f32; 3], strength: f32) -> [f32; 3] {
+    if strength <= 0.0 {
+        return color;
+    }
+    let mut scale = 1.0 / color[0].max(1.0e-5);
+    scale = scale.min(1.0 / color[1].max(1.0e-5));
+    scale = scale.min(1.0 / color[2].max(1.0e-5));
+    [
+        color[0] * (1.0 - strength) + color[0] * scale * strength,
+        color[1] * (1.0 - strength) + color[1] * scale * strength,
+        color[2] * (1.0 - strength) + color[2] * scale * strength,
+    ]
+}
+
 fn append_world_mesh(
     vertices: &mut Vec<crate::world::mesh::Vertex>,
     indices: &mut Vec<u32>,
@@ -637,6 +667,27 @@ impl super::Renderer {
             .as_millis()
             % 14_619_000) as f32
             / 1000.0;
+        let night_vision = night_vision_strength(
+            self.state.hud.active_potion_effects(),
+            camera.partial_tick,
+        )
+        .clamp(0.0, 1.0);
+        if night_vision > 0.0 {
+            let boosted = apply_night_vision_color(
+                [sky.fog_color[0], sky.fog_color[1], sky.fog_color[2]],
+                night_vision,
+            );
+            sky.fog_color[0] = boosted[0];
+            sky.fog_color[1] = boosted[1];
+            sky.fog_color[2] = boosted[2];
+            let boosted_clear = apply_night_vision_color(
+                [sky.clear_color[0], sky.clear_color[1], sky.clear_color[2]],
+                night_vision,
+            );
+            sky.clear_color[0] = boosted_clear[0];
+            sky.clear_color[1] = boosted_clear[1];
+            sky.clear_color[2] = boosted_clear[2];
+        }
         let uniforms = Uniforms {
             view: view.into(),
             proj: proj.into(),
@@ -664,6 +715,12 @@ impl super::Renderer {
                 crate::world::material::GRASS_COLOR[1],
                 crate::world::material::GRASS_COLOR[2],
                 self.state.hud.dimension() as f32,
+            ],
+            lightmap_params: [
+                self.state.settings.gamma().clamp(0.0, 1.0),
+                night_vision,
+                0.0,
+                0.0,
             ],
         };
         let ualloc = self.resources.uniform_alloc(frame);
@@ -4555,8 +4612,43 @@ fn build_sign_texture(
 
 #[cfg(test)]
 mod tests {
-    use super::sign_text_plane;
+    use super::{apply_night_vision_color, night_vision_strength, sign_text_plane};
+    use crate::entity::EntityEffectState;
     use crate::render::hud::entities::SignEntry;
+
+    #[test]
+    fn night_vision_strength_matches_vanilla_curve() {
+        let active = [EntityEffectState {
+            effect_id: 16,
+            amplifier: 0,
+            duration: 400,
+            hide_particles: false,
+        }];
+        assert_eq!(night_vision_strength(&active, 0.0), 1.0);
+
+        let fading = [EntityEffectState {
+            effect_id: 16,
+            amplifier: 0,
+            duration: 100,
+            hide_particles: false,
+        }];
+        let strength = night_vision_strength(&fading, 0.0);
+        assert!((strength - 0.7).abs() < 0.31);
+        assert!(strength > 0.39 && strength < 1.01);
+
+        assert_eq!(night_vision_strength(&[], 0.0), 0.0);
+    }
+
+    #[test]
+    fn night_vision_color_boost_raises_dark_fog() {
+        // scale = min(1/0.05, 1/0.05, 1/0.08) = 12.5 → rgb ≈ (0.625, 0.625, 1.0)
+        let boosted = apply_night_vision_color([0.05, 0.05, 0.08], 1.0);
+        assert!((boosted[0] - 0.625).abs() < 1.0e-4);
+        assert!((boosted[1] - 0.625).abs() < 1.0e-4);
+        assert!((boosted[2] - 1.0).abs() < 1.0e-4);
+        assert!(boosted[0] > 0.05);
+        assert!(boosted[2] > 0.08);
+    }
 
     fn standing_sign(metadata: u8) -> SignEntry {
         SignEntry {

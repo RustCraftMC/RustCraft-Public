@@ -92,6 +92,14 @@ pub fn atlas_name_for_entity(entity_type: EntityType, visual: EntityVisualState)
         EntityType::PigZombie => "zombie_pigman",
         EntityType::Creeper => "creeper",
         EntityType::Witch => "witch",
+        EntityType::MinecartEmpty
+        | EntityType::MinecartChest
+        | EntityType::MinecartFurnace
+        | EntityType::MinecartTNT
+        | EntityType::MinecartHopper
+        | EntityType::MinecartSpawner
+        | EntityType::MinecartCommand => "minecart",
+        EntityType::Boat => "boat",
         EntityType::Pig => "pig",
         EntityType::Sheep => "sheep",
         EntityType::Cow => "cow",

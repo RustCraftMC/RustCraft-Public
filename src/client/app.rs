@@ -823,8 +823,12 @@ impl ApplicationHandler for App {
                 // Drop renderer first so Vulkan resources (surface, swapchain)
                 // are destroyed while the window handle is still valid.
                 self.renderer = None;
-                // Also drop the network connection so the server is notified.
-                self.net_ctrl.connection = None;
+                // Abort connect + drop the network connection so sockets close.
+                self.net_ctrl.connect_task = None;
+                if let Some(conn) = self.net_ctrl.connection.take() {
+                    conn.close();
+                    drop(conn);
+                }
                 self.scripts.set_connection_active(false);
                 self.scripts.shutdown();
                 event_loop.exit();

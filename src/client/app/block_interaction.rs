@@ -1110,8 +1110,8 @@ impl App {
             return;
         }
 
-        if item_id < 256 {
-            // Block item — try to place
+        // Placeable blocks and block-like items (redstone dust id 331, etc.).
+        if self.inventory.selected_block().is_some() {
             self.place_selected_block();
             return;
         }
@@ -1187,6 +1187,9 @@ impl App {
             .is_some()
             {
                 self.send_block_placement_for_item();
+                if let Some(renderer) = &mut self.renderer {
+                    renderer.trigger_hand_swing();
+                }
             } else {
                 // No target — just send use item packet
                 self.send_item_use_packet();

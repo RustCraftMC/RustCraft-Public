@@ -197,7 +197,6 @@ impl Renderer {
             return;
         }
 
-        font_gui.fill_rect(0.0, 0.0, sw, sh, [0.0, 0.0, 0.0, 0.68]);
         let inv_w = 176.0 * gs;
         let inv_h = 166.0 * gs;
         let panel_x = (sw - inv_w) * 0.5;
@@ -398,9 +397,6 @@ impl Renderer {
         let cols = 9usize;
         let rows = 5usize;
         let total_slots = cols * rows;
-
-        // Dark overlay
-        font_gui.fill_rect(0.0, 0.0, sw, sh, [0.0, 0.0, 0.0, 0.68]);
 
         // Vanilla creative inventory is 195x136 for every tab, including the inventory tab.
         let inv_w = CREATIVE_PANEL_WIDTH * gs;

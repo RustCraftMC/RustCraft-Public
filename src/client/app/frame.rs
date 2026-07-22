@@ -96,9 +96,11 @@ impl App {
                 self.world.defer_mesh_build = false;
                 self.state = GameState::Playing;
                 // Enqueue already-received chunks for incremental mesh building.
-                // Don't bulk-build them all now — that causes a multi-frame stutter.
-                // The incremental builder below handles 4 at a time.
-                self.world.enqueue_all_chunks_for_mesh();
+                // Prefer near-player columns so the camera is not staring at void
+                // while the outer ring builds in the background.
+                let pcx = (self.player.position.x / 16.0).floor() as i32;
+                let pcz = (self.player.position.z / 16.0).floor() as i32;
+                self.world.enqueue_all_chunks_for_mesh_near(pcx, pcz);
                 self.set_cursor_captured(true);
                 self.input_ctrl.mouse_captured = true;
             }
@@ -134,13 +136,13 @@ impl App {
             // Building GPU draw metadata and staging dense chunks happens on
             // this event/render thread. Cap both byte volume and wall-clock
             // time so a burst of dense chunks cannot hitch the frame.
-            const CHUNK_UPLOAD_BUDGET: usize = 4 * 1024 * 1024;
+            const CHUNK_UPLOAD_BUDGET: usize = 12 * 1024 * 1024;
             /// Even a single mesh larger than this is deferred to the next
             /// frame so one ultra-dense chunk can't monopolise a frame.
-            const CHUNK_UPLOAD_SINGLE_MAX: usize = 1 * 1024 * 1024;
+            const CHUNK_UPLOAD_SINGLE_MAX: usize = 4 * 1024 * 1024;
             /// Wall-clock budget for the upload-staging path. Anything that
             /// doesn't fit is left in `pending_chunk_uploads` for next frame.
-            const CHUNK_UPLOAD_TIME_BUDGET_US: u64 = 8_000;
+            const CHUNK_UPLOAD_TIME_BUDGET_US: u64 = 16_000;
             let upload_started = std::time::Instant::now();
             let mut upload = Vec::new();
             let mut upload_bytes = 0usize;
@@ -404,6 +406,12 @@ impl App {
                     self.dig.cancel();
                     self.pending_dig_cancel = None;
                     self.block_hit_delay = 0;
+                    // Ensure no half-open connection lingers after a failed login.
+                    if let Some(conn) = self.net_ctrl.connection.take() {
+                        conn.close();
+                        drop(conn);
+                    }
+                    self.scripts.set_connection_active(false);
                     self.state = GameState::Multiplayer;
                     self.input_ctrl.mouse_captured = false;
                     self.set_cursor_captured(false);
@@ -1107,12 +1115,7 @@ impl App {
             renderer.block_dirty = true;
         }
         renderer.state.hud.set_block_selection_boxes(new_boxes);
-        let new_dig_progress =
-            if target.as_ref().map(|target| target.hit.pos) == self.dig.active_pos() {
-                self.dig.progress()
-            } else {
-                0.0
-            };
+        let new_dig_progress = self.dig.progress();
         if (new_dig_progress - renderer.state.hud.dig_progress()).abs() > 0.001 {
             renderer.block_dirty = true;
         }
@@ -1155,6 +1158,7 @@ impl App {
             renderer.state.settings.audio_device_mut().push_str(audio_device);
         }
         renderer.state.settings.set_fov(self.config.fov);
+        renderer.state.settings.set_gamma(self.config.gamma);
         renderer.state.settings.set_max_framerate(self.config.max_framerate);
         renderer.state.settings.set_clouds(self.config.clouds);
         renderer.state.settings.set_weather_effects(self.config.weather_effects);
@@ -1370,6 +1374,34 @@ impl App {
         renderer.state.hud.set_world_time(self.session.world_time);
         renderer.state.hud.set_day_time(self.session.day_time);
         renderer.state.hud.set_dimension(self.session.dimension);
+        renderer.state.hud.set_debug_pos([
+            self.player.position.x,
+            self.player.position.y,
+            self.player.position.z,
+        ]);
+        renderer.state.hud.set_debug_yaw(self.player.camera.yaw);
+        renderer.state.hud.set_debug_pitch(self.player.camera.pitch);
+        renderer.state.hud.set_debug_entity_count(self.entities.count());
+        renderer.state.hud.set_debug_looking_at(target.as_ref().map(|t| {
+            [t.hit.pos.0, t.hit.pos.1, t.hit.pos.2]
+        }));
+        let bx = self.player.position.x.floor() as i32;
+        let by = self.player.position.y.floor() as i32;
+        let bz = self.player.position.z.floor() as i32;
+        renderer.state.hud.set_debug_biome_id(self.world.biome_at(bx, bz));
+        let light = self.world.light_at_world(bx, by, bz);
+        let combined = light.sky.max(light.block);
+        renderer.state.hud.set_debug_light_combined(combined);
+        renderer.state.hud.set_debug_light_sky(light.sky);
+        renderer.state.hud.set_debug_light_block(light.block);
+        let looking_block = target.as_ref().map(|t| {
+            let block = self.world.get_block(t.hit.pos.0, t.hit.pos.1, t.hit.pos.2);
+            format!("minecraft:{}", block.properties().name)
+        });
+        renderer
+            .state
+            .hud
+            .set_debug_looking_block(looking_block);
         renderer.state.hud.set_raining(self.session.game_state.raining);
         renderer.state.hud.set_rain_level(self.session.game_state.rain_level);
         renderer.state.hud.set_thunder_level(self.session.game_state.thunder_level);
@@ -1605,6 +1637,7 @@ impl App {
                             .copied()
                             .unwrap_or(false),
                         self.player_cape_ready.contains(&entity.entity_id),
+                        self.tick_timer.alpha(),
                     )
                 })
                 .collect());
@@ -2191,6 +2224,8 @@ impl App {
             h.write_i32((entity.body_yaw * 10.0) as i32);
             h.write_i32((entity.head_yaw * 10.0) as i32);
             h.write_i32((entity.pitch * 10.0) as i32);
+            h.write_u32((entity.limb_swing * 20.0) as u32);
+            h.write_u32((entity.limb_swing_amount * 20.0) as u32);
             h.write_u32((entity.hurt_time * 5.0) as u32);
             h.write_u32(entity.metadata.len() as u32);
             // Visual variants drive atlas_name_for_entity (wolf angry, horse
@@ -2283,6 +2318,7 @@ fn entity_billboard(
     world: &crate::world::World,
     slim: bool,
     cape_ready: bool,
+    partial_tick: f32,
 ) -> crate::render::EntityBillboard {
     use crate::entity::{EntityData, EntityType};
     let (width, height) = entity.entity_type.bounding_box();
@@ -2427,8 +2463,10 @@ fn entity_billboard(
         yaw: entity.body_yaw,
         pitch: entity.pitch,
         head_yaw: entity.head_yaw,
-        limb_swing: entity.limb_swing,
-        limb_swing_amount: entity.limb_swing_amount,
+        limb_swing: entity.prev_limb_swing
+            + (entity.limb_swing - entity.prev_limb_swing) * partial_tick,
+        limb_swing_amount: entity.prev_limb_swing_amount
+            + (entity.limb_swing_amount - entity.prev_limb_swing_amount) * partial_tick,
         sneaking: entity.metadata.iter().any(|entry| {
             entry.index == 0
                 && matches!(entry.value, crate::net::metadata::MetadataValue::Byte(flags) if flags as u8 & 0x02 != 0)

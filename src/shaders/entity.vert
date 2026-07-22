@@ -20,6 +20,7 @@ layout(set = 0, binding = 0) uniform Uniforms {
     vec4 fog_color;
     vec4 fog_params;
     vec4 grass_color;
+    vec4 lightmap_params;
 };
 
 float light_table(float level_01) {
@@ -34,7 +35,24 @@ vec3 vanilla_lightmap(float sky_level, float block_level) {
     float sky_red = sky * (sun * 0.65 + 0.35);
     float block_green = block * ((block * 0.6 + 0.4) * 0.6 + 0.4);
     float block_blue = block * (block * block * 0.6 + 0.4);
-    return clamp(vec3(sky_red + block, sky_red + block_green, sky + block_blue) * 0.96 + 0.03, 0.0, 1.0);
+    vec3 color = clamp(vec3(sky_red + block, sky_red + block_green, sky + block_blue) * 0.96 + 0.03, 0.0, 1.0);
+
+    float night_vision = clamp(lightmap_params.y, 0.0, 1.0);
+    if (night_vision > 0.0) {
+        float inv_scale = 1.0 / max(color.r, 1.0e-5);
+        inv_scale = min(inv_scale, 1.0 / max(color.g, 1.0e-5));
+        inv_scale = min(inv_scale, 1.0 / max(color.b, 1.0e-5));
+        color = color * (1.0 - night_vision) + color * inv_scale * night_vision;
+    }
+
+    color = clamp(color, 0.0, 1.0);
+
+    float gamma = clamp(lightmap_params.x, 0.0, 1.0);
+    vec3 inv = vec3(1.0) - color;
+    vec3 curved = vec3(1.0) - inv * inv * inv * inv;
+    color = color * (1.0 - gamma) + curved * gamma;
+    color = color * 0.96 + 0.03;
+    return clamp(color, 0.0, 1.0);
 }
 
 void main() {
@@ -50,14 +68,20 @@ void main() {
         float packed = color.a - 16.0;
         float sky_light = floor(packed / 16.0);
         float block_light = mod(packed, 16.0);
-        float face_brightness = 0.35 + 0.65 * max(dot(normalize(normal), -light_dir.xyz), 0.0);
-        v_light = vanilla_lightmap(sky_light, block_light) * face_brightness;
+        vec3 n = normalize(normal);
+        float an = abs(n.y) >= abs(n.x) && abs(n.y) >= abs(n.z)
+            ? (n.y >= 0.0 ? 1.0 : 0.5)
+            : (abs(n.z) >= abs(n.x) ? 0.8 : 0.6);
+        v_light = vanilla_lightmap(sky_light, block_light) * an;
     } else {
         // Non-entity geometry sharing this vertex type keeps its existing
         // daylight approximation and alpha semantics.
         float daylight = clamp(fog_params.w, 0.0, 1.0);
-        float face_brightness = 0.35 + 0.65 * max(dot(normalize(normal), -light_dir.xyz), 0.0);
-        v_light = vec3(mix(0.15, 1.0, daylight) * face_brightness);
+        vec3 n = normalize(normal);
+        float an = abs(n.y) >= abs(n.x) && abs(n.y) >= abs(n.z)
+            ? (n.y >= 0.0 ? 1.0 : 0.5)
+            : (abs(n.z) >= abs(n.x) ? 0.8 : 0.6);
+        v_light = vec3(mix(0.15, 1.0, daylight) * an);
     }
 
     v_world_y = position.y;

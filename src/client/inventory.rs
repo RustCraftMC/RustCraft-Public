@@ -613,6 +613,14 @@ impl Inventory {
         if item.is_empty() {
             return None;
         }
+        // Items whose protocol id differs from the placed block id (1.8.9).
+        match item.item_id {
+            331 => return Some(Block::RedstoneWire),
+            50 => return Some(Block::Torch),
+            76 => return Some(Block::RedstoneTorch),
+            75 => return Some(Block::UnlitRedstoneTorch),
+            _ => {}
+        }
         let block = Block::from_id(item.item_id);
         if block == Block::Air || block.to_id() != item.item_id {
             None

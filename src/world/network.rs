@@ -239,7 +239,15 @@ impl World {
         self.enqueue_chunk_mesh_removal(chunk_x, chunk_z);
         self.enqueue_chunk_mesh_with_neighbors(chunk_x, chunk_z);
         self.mark_snapshot_chunk_changed(chunk_x, chunk_z);
-        Vec::new()
+        vec![ChunkMesh {
+            vertices: Vec::new(),
+            indices: Vec::new(),
+            cx: chunk_x,
+            cz: chunk_z,
+            transparent_start: 0,
+            aabb_min: [f32::MAX; 3],
+            aabb_max: [f32::MIN; 3],
+        }]
     }
 
     /// Evict chunks farther than `render_distance`+margin from the player.

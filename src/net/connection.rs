@@ -8,12 +8,18 @@ use rsa::{Pkcs1v15Encrypt, RsaPublicKey};
 use sha1::{Digest, Sha1};
 use std::collections::VecDeque;
 use std::io::{self, Read, Write};
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// TCP connect timeout — without this, OS retries can hang for minutes and
+/// look like the client is "spamming" connections after a failed join.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+/// Read/write timeout for the login handshake (encryption / compression).
+const LOGIN_IO_TIMEOUT: Duration = Duration::from_secs(15);
 
 use super::packet::{ClientboundPacket, ProtocolState};
 use super::protocol;
@@ -51,7 +57,7 @@ impl Connection {
                 "offline"
             }
         );
-        let stream = TcpStream::connect((host, port))?;
+        let stream = connect_tcp(host, port)?;
         // NetworkManager enables ChannelOption.TCP_NODELAY for vanilla
         // connections. Movement packets are tiny and sent every 50 ms; Nagle
         // buffering can otherwise deliver several C03 packets as one burst,
@@ -148,6 +154,10 @@ impl Connection {
                         "login completed in {:.2} ms",
                         connect_started.elapsed().as_secs_f64() * 1000.0
                     );
+                    // Play-phase keepalives can be sparse under lag; clear the
+                    // short login I/O timeouts so the reader is not killed.
+                    let _ = reader.set_read_timeout(None);
+                    let _ = writer.set_write_timeout(None);
                     break;
                 }
                 ClientboundPacket::Disconnect { reason } => {
@@ -277,6 +287,26 @@ impl Connection {
             );
         }
     }
+
+    /// Mark the connection dead so the reader/writer threads exit promptly.
+    /// Dropping `Connection` also does this via `Drop`.
+    pub fn close(&self) {
+        self.connected.store(false, Ordering::SeqCst);
+    }
+}
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        // Signal threads first, then drop the outbound channel so the writer
+        // unblocks and shuts down the TCP socket (which unblocks the reader).
+        self.connected.store(false, Ordering::SeqCst);
+        // Replace outbound with a dummy channel so Drop of the old Sender
+        // closes the writer thread without requiring Option fields.
+        let (dead_tx, _dead_rx) = mpsc::channel();
+        let old = std::mem::replace(&mut self.outbound_tx, dead_tx);
+        drop(old);
+        log::debug!("connection dropped; reader/writer threads signalled to exit");
+    }
 }
 
 struct Cfb8 {
@@ -372,6 +402,12 @@ impl Reader {
             Self::Encrypted(s) => s.stream.shutdown(std::net::Shutdown::Both),
         }
     }
+    fn set_read_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        match self {
+            Self::Plain(s) => s.set_read_timeout(timeout),
+            Self::Encrypted(s) => s.stream.set_read_timeout(timeout),
+        }
+    }
 }
 impl Read for Reader {
     fn read(&mut self, b: &mut [u8]) -> io::Result<usize> {
@@ -390,6 +426,12 @@ impl Writer {
         match self {
             Self::Plain(s) => s,
             Self::Encrypted(s) => s.stream,
+        }
+    }
+    fn set_write_timeout(&self, timeout: Option<Duration>) -> io::Result<()> {
+        match self {
+            Self::Plain(s) => s.set_write_timeout(timeout),
+            Self::Encrypted(s) => s.stream.set_write_timeout(timeout),
         }
     }
     fn shutdown(&self) -> io::Result<()> {
@@ -458,6 +500,40 @@ fn parse_addr(addr: &str) -> (&str, u16) {
     } else {
         (addr, 25565)
     }
+}
+
+/// Resolve `host:port` and open a TCP socket with a hard connect timeout.
+fn connect_tcp(host: &str, port: u16) -> io::Result<TcpStream> {
+    let addrs: Vec<SocketAddr> = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| io::Error::new(e.kind(), format!("DNS resolve failed for {host}:{port}: {e}")))?
+        .collect();
+    if addrs.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("no addresses for {host}:{port}"),
+        ));
+    }
+    let mut last_err = None;
+    for addr in addrs {
+        match TcpStream::connect_timeout(&addr, CONNECT_TIMEOUT) {
+            Ok(stream) => {
+                let _ = stream.set_read_timeout(Some(LOGIN_IO_TIMEOUT));
+                let _ = stream.set_write_timeout(Some(LOGIN_IO_TIMEOUT));
+                return Ok(stream);
+            }
+            Err(e) => {
+                log::debug!("TCP connect_timeout failed: addr={addr}, error={e}");
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            format!("could not connect to {host}:{port}"),
+        )
+    }))
 }
 
 #[cfg(test)]

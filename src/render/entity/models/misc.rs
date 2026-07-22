@@ -189,15 +189,79 @@ pub fn boat_model() -> Vec<ModelCuboid> {
     )]
 }
 
-/// Minecart — simple box
+/// Minecart — ModelMinecart (1.8.9): bottom + 4 sides + inner floor.
 pub fn minecart_model() -> Vec<ModelCuboid> {
-    let face = uv64x32(0, 0, 16, 16, 16);
-    vec![cuboid(
-        [0.0, 0.25, 0.0],
-        [0.98, 0.7, 0.98],
-        face,
-        PartType::Body,
-    )]
+    // sideModels[0] bottom: tex (0,10), box 20x16x2, rp(0,4,0), rotateX=PI/2
+    // sideModels[1..4] walls: tex (0,0), box 16x8x2 at four sides
+    // sideModels[5] inner floor: tex (44,10), box 18x14x1, rp(0,4,0), rotateX=-PI/2
+    // origin_y=6 ≈ RenderMinecart's y+0.375 with inverted model space (feet at 0).
+    let bottom = uv64x32(0, 10, 20, 2, 16);
+    let wall = uv64x32(0, 0, 16, 8, 2);
+    let floor = uv64x32(44, 10, 18, 1, 14);
+    let oy = 6.0;
+    let half_pi = std::f32::consts::FRAC_PI_2;
+    vec![
+        mc_cuboid(
+            [0.0, 4.0, 0.0],
+            [-10.0, -8.0, -1.0],
+            [20.0, 16.0, 2.0],
+            oy,
+            [half_pi, 0.0, 0.0],
+            false,
+            bottom,
+            PartType::Body,
+        ),
+        mc_cuboid(
+            [-9.0, 4.0, 0.0],
+            [-8.0, -9.0, -1.0],
+            [16.0, 8.0, 2.0],
+            oy,
+            [0.0, half_pi * 3.0, 0.0],
+            false,
+            wall,
+            PartType::Body,
+        ),
+        mc_cuboid(
+            [9.0, 4.0, 0.0],
+            [-8.0, -9.0, -1.0],
+            [16.0, 8.0, 2.0],
+            oy,
+            [0.0, half_pi, 0.0],
+            false,
+            wall,
+            PartType::Body,
+        ),
+        mc_cuboid(
+            [0.0, 4.0, -7.0],
+            [-8.0, -9.0, -1.0],
+            [16.0, 8.0, 2.0],
+            oy,
+            [0.0, std::f32::consts::PI, 0.0],
+            false,
+            wall,
+            PartType::Body,
+        ),
+        mc_cuboid(
+            [0.0, 4.0, 7.0],
+            [-8.0, -9.0, -1.0],
+            [16.0, 8.0, 2.0],
+            oy,
+            [0.0, 0.0, 0.0],
+            false,
+            wall,
+            PartType::Body,
+        ),
+        mc_cuboid(
+            [0.0, 4.0, 0.0],
+            [-9.0, -7.0, -1.0],
+            [18.0, 14.0, 1.0],
+            oy,
+            [-half_pi, 0.0, 0.0],
+            false,
+            floor,
+            PartType::Body,
+        ),
+    ]
 }
 
 /// Generate armor overlay cuboids for a set of equipment.

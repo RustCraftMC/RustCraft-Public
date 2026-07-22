@@ -167,6 +167,7 @@ pub struct RenderSettings {
     ui_volume_: f32,
     audio_device_: String,
     fov_: f32,
+    gamma_: f32,
     max_framerate_: u32,
     clouds_: bool,
     weather_effects_: bool,
@@ -222,6 +223,7 @@ impl Default for RenderSettings {
             ui_volume_: 0.0,
             audio_device_: String::new(),
             fov_: 0.0,
+            gamma_: 0.0,
             max_framerate_: 0,
             clouds_: false,
             weather_effects_: true,
@@ -303,6 +305,12 @@ impl RenderSettings {
         self.fov_ = v;
     }
 
+    /// Brightness (vanilla gamma), clamped to 0.0..=1.0.
+    pub fn gamma(&self) -> f32 { self.gamma_ }
+    pub fn set_gamma(&mut self, v: f32) {
+        self.gamma_ = v.clamp(0.0, 1.0);
+    }
+    
     /// Maximum framerate cap. Must be at least 1.
     pub fn max_framerate(&self) -> u32 { self.max_framerate_ }
     pub fn set_max_framerate(&mut self, v: u32) {
@@ -703,6 +711,16 @@ pub struct HudState {
     fp_vanilla_flags_: crate::render::first_person::VanillaTransformFlags,
     local_player_billboard_: Option<EntityBillboard>,
     fps_count_: u32,
+    debug_pos_: [f64; 3],
+    debug_yaw_: f32,
+    debug_pitch_: f32,
+    debug_entity_count_: usize,
+    debug_looking_at_: Option<[i32; 3]>,
+    debug_biome_id_: u8,
+    debug_light_combined_: u8,
+    debug_light_sky_: u8,
+    debug_light_block_: u8,
+    debug_looking_block_: Option<String>,
     recent_sounds_: Vec<String>,
     sound_event_count_: u64,
 }
@@ -798,6 +816,16 @@ impl Default for HudState {
             fp_vanilla_flags_: crate::render::first_person::VanillaTransformFlags::default(),
             local_player_billboard_: None,
             fps_count_: 0,
+            debug_pos_: [0.0; 3],
+            debug_yaw_: 0.0,
+            debug_pitch_: 0.0,
+            debug_entity_count_: 0,
+            debug_looking_at_: None,
+            debug_biome_id_: 1,
+            debug_light_combined_: 15,
+            debug_light_sky_: 15,
+            debug_light_block_: 0,
+            debug_looking_block_: None,
             recent_sounds_: Vec::new(),
             sound_event_count_: 0,
         }
@@ -859,6 +887,16 @@ impl HudState {
     copy_field!(first_person_arm_transform_, first_person_arm_transform, first_person_arm_transform_mut, set_first_person_arm_transform, nalgebra::Matrix4<f32>);
     copy_field!(first_person_item_transform_, first_person_item_transform, first_person_item_transform_mut, set_first_person_item_transform, nalgebra::Matrix4<f32>);
     copy_field!(fps_count_, fps_count, fps_count_mut, set_fps_count, u32);
+    copy_field!(debug_pos_, debug_pos, debug_pos_mut, set_debug_pos, [f64; 3]);
+    copy_field!(debug_yaw_, debug_yaw, debug_yaw_mut, set_debug_yaw, f32);
+    copy_field!(debug_pitch_, debug_pitch, debug_pitch_mut, set_debug_pitch, f32);
+    copy_field!(debug_entity_count_, debug_entity_count, debug_entity_count_mut, set_debug_entity_count, usize);
+    copy_field!(debug_looking_at_, debug_looking_at, debug_looking_at_mut, set_debug_looking_at, Option<[i32; 3]>);
+    copy_field!(debug_biome_id_, debug_biome_id, debug_biome_id_mut, set_debug_biome_id, u8);
+    copy_field!(debug_light_combined_, debug_light_combined, debug_light_combined_mut, set_debug_light_combined, u8);
+    copy_field!(debug_light_sky_, debug_light_sky, debug_light_sky_mut, set_debug_light_sky, u8);
+    copy_field!(debug_light_block_, debug_light_block, debug_light_block_mut, set_debug_light_block, u8);
+    ref_field!(debug_looking_block_, debug_looking_block, debug_looking_block_mut, set_debug_looking_block, Option<String>);
     copy_field!(sound_event_count_, sound_event_count, sound_event_count_mut, set_sound_event_count, u64);
     copy_field!(health_, health, health_mut, set_health, f32);
     copy_field!(prev_health_, prev_health, prev_health_mut, set_prev_health, f32);

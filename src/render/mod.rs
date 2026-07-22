@@ -54,6 +54,8 @@ struct Uniforms {
     fog_color: [f32; 4],
     fog_params: [f32; 4],
     grass_color: [f32; 4],
+    /// x = brightness gamma (0..1), y = night-vision strength (0..1).
+    lightmap_params: [f32; 4],
 }
 
 /// GPU-side uniform block for sky rendering.

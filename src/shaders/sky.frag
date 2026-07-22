@@ -14,70 +14,91 @@ layout(set = 0, binding = 1) uniform sampler2D sun_tex;
 layout(set = 0, binding = 2) uniform sampler2D moon_tex;
 layout(set = 0, binding = 3) uniform sampler2D custom_sky_tex;
 
+// Procedural stars as L-inf squares in each star's tangent plane
+// (vanilla RenderGlobal.renderStars style; avoids cube-face UV seams).
 float hash13(vec3 p) {
     p = fract(p * 0.1031);
     p += dot(p, p.yzx + 33.33);
     return fract((p.x + p.y) * p.z);
 }
 
-void cube_face_uv(vec3 direction, out vec2 uv, out float face) {
-    vec3 axis = abs(direction);
-
-    if (axis.x >= axis.y && axis.x >= axis.z) {
-        if (direction.x >= 0.0) {
-            uv = vec2(-direction.z, direction.y) / axis.x;
-            face = 0.0;
-        } else {
-            uv = vec2(direction.z, direction.y) / axis.x;
-            face = 1.0;
-        }
-    } else if (axis.y >= axis.z) {
-        if (direction.y >= 0.0) {
-            uv = vec2(direction.x, -direction.z) / axis.y;
-            face = 2.0;
-        } else {
-            uv = vec2(direction.x, direction.z) / axis.y;
-            face = 3.0;
-        }
-    } else if (direction.z >= 0.0) {
-        uv = vec2(direction.x, direction.y) / axis.z;
-        face = 4.0;
+void star_tangent_frame(vec3 dir, out vec3 right, out vec3 up) {
+    right = cross(vec3(0.0, 1.0, 0.0), dir);
+    if (dot(right, right) < 1e-6) {
+        right = vec3(1.0, 0.0, 0.0);
     } else {
-        uv = vec2(-direction.x, direction.y) / axis.z;
-        face = 5.0;
+        right = normalize(right);
     }
-
-    uv = uv * 0.5 + 0.5;
+    up = normalize(cross(dir, right));
 }
 
-float vanilla_star(vec3 direction) {
-    vec2 uv;
-    float face;
-    cube_face_uv(direction, uv, face);
-
-    const float grid_size = 22.0;
-    vec2 grid = uv * grid_size;
-    vec2 cell = floor(grid);
-    vec2 point = fract(grid);
-    vec3 seed = vec3(cell, face * 97.0 + 10842.0);
-
-    if (hash13(seed) > 0.5165) {
+float star_in_cell(vec3 direction, vec2 cell) {
+    vec3 seed = vec3(cell, 10842.0);
+    if (hash13(seed) > 0.48) {
         return 0.0;
     }
 
-    vec2 center = vec2(hash13(seed + 17.0), hash13(seed + 43.0));
-    center = mix(vec2(0.12), vec2(0.88), center);
-    vec2 offset = point - center;
+    float u = hash13(seed + 17.0);
+    float v = hash13(seed + 43.0);
+    const float az_cells = 36.0;
+    const float el_cells = 18.0;
+    float az = ((cell.x + u) / az_cells) * 6.2831853;
+    float cos_el = clamp(((cell.y + v) / el_cells) * 2.0 - 1.0, -1.0, 1.0);
+    float sin_el = sqrt(max(1.0 - cos_el * cos_el, 0.0));
+    vec3 star_dir = vec3(sin(az) * sin_el, cos_el, cos(az) * sin_el);
+
+    if (star_dir.y < 0.02) {
+        return 0.0;
+    }
+
+    float alignment = dot(direction, star_dir);
+    // Vanilla half-size 0.15..0.25 at radius 100 ≈ 0.0015..0.0025 on unit sphere.
+    if (alignment < 0.99985) {
+        return 0.0;
+    }
+
+    vec3 right;
+    vec3 up;
+    star_tangent_frame(star_dir, right, up);
+
+    vec3 offset3 = direction - star_dir * alignment;
+    vec2 local = vec2(dot(offset3, right), dot(offset3, up));
 
     float rotation = hash13(seed + 71.0) * 6.2831853;
     float sine = sin(rotation);
     float cosine = cos(rotation);
-    offset = mat2(cosine, -sine, sine, cosine) * offset;
+    local = mat2(cosine, -sine, sine, cosine) * local;
 
-    float half_size = mix(0.025, 0.045, hash13(seed + 113.0));
-    float square_distance = max(abs(offset.x), abs(offset.y));
-    float antialias = max(fwidth(square_distance), 0.002);
+    float half_size = mix(0.0015, 0.0025, hash13(seed + 113.0));
+    float square_distance = max(abs(local.x), abs(local.y));
+    float antialias = max(fwidth(square_distance), 1e-5);
     return 1.0 - smoothstep(half_size, half_size + antialias, square_distance);
+}
+
+float vanilla_star(vec3 direction) {
+    const float az_cells = 36.0;
+    const float el_cells = 18.0;
+
+    float az = atan(direction.x, direction.z);
+    if (az < 0.0) {
+        az += 6.2831853;
+    }
+    float cos_el = clamp(direction.y, -1.0, 1.0);
+    float fx = az / 6.2831853 * az_cells;
+    float fy = (cos_el * 0.5 + 0.5) * el_cells;
+
+    float brightest = 0.0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            vec2 cell = floor(vec2(fx, fy)) + vec2(float(dx), float(dy));
+            cell.x = mod(cell.x, az_cells);
+            if (cell.y < 0.0 || cell.y >= el_cells) {
+                continue;
+            }
+            brightest = max(brightest, star_in_cell(direction, cell));
+        }
+    }
+    return brightest;
 }
 
 bool billboard_uv(vec3 direction, vec3 axis, float half_extent, out vec2 uv) {

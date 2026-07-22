@@ -3,395 +3,290 @@ use crate::render::gui::GuiVertexBuilder;
 use crate::render::Renderer;
 
 impl Renderer {
+    /// Vanilla-style F3 overlay (GuiOverlayDebug layout): left + right columns,
+    /// per-line dark bars, normal HUD font size. Branding says RustCraft instead
+    /// of Minecraft/Java.
     pub(super) fn draw_debug_panel(
         &mut self,
         metrics: &MenuMetrics,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        let base_panel_h: f32 = if self.state.hud.player_list().is_empty() {
-            240.0
-        } else {
-            278.0
-        };
-        let gs = metrics
-            .gs
-            .min((metrics.sw / 354.0).max(0.01))
-            .min((metrics.sh / (base_panel_h + 4.0)).max(0.01));
-        let font_sz = 9.0 * gs;
-        let pad = 4.0 * gs;
-        let panel_h = base_panel_h * gs;
+        let gs = metrics.gs;
+        let font_sz = metrics.font_sz;
+        let line_h = font_sz + 1.0 * gs;
+        let left = self.debug_left_lines();
+        let right = self.debug_right_lines(metrics);
+        self.draw_debug_column(font_gui, &left, 2.0 * gs, line_h, font_sz, false, metrics.sw);
+        self.draw_debug_column(font_gui, &right, 2.0 * gs, line_h, font_sz, true, metrics.sw);
+    }
+
+    fn draw_debug_column(
+        &mut self,
+        font_gui: &mut GuiVertexBuilder,
+        lines: &[String],
+        pad: f32,
+        line_h: f32,
+        font_sz: f32,
+        align_right: bool,
+        screen_w: f32,
+    ) {
+        let bar = [0.0, 0.0, 0.0, 144.0 / 255.0];
+        let text_color = [147.0 / 255.0, 147.0 / 255.0, 147.0 / 255.0, 1.0];
+        for (i, line) in lines.iter().enumerate() {
+            if line.is_empty() {
+                continue;
+            }
+            let text_w = self.font.text_width(line, font_sz);
+            let y = pad + line_h * i as f32;
+            let x = if align_right {
+                screen_w - pad - text_w
+            } else {
+                pad
+            };
+            font_gui.fill_rect(x - 1.0, y - 1.0, text_w + 2.0, line_h, bar);
+            font_gui.draw_text(&mut self.font, x, y, line, font_sz, text_color);
+        }
+    }
+
+    fn debug_left_lines(&self) -> Vec<String> {
+        let version = env!("CARGO_PKG_VERSION");
+        let fps = self.state.hud.fps_count();
         let profile = self.state.frame_profile.completed_frame_profile();
-        let frame_cap = profile.max_framerate.max(30);
-        let target_us = 1_000_000u64 / u64::from(frame_cap);
-        let over_target_us = profile.interval_us.saturating_sub(target_us);
-        let render_accounted_us = profile
-            .fence_us
-            .saturating_add(profile.acquire_us)
-            .saturating_add(profile.mesh_us)
-            .saturating_add(profile.gui_us)
-            .saturating_add(profile.command_us)
-            .saturating_add(profile.submit_us)
-            .saturating_add(profile.present_us);
-        let render_other_us = profile.render_us.saturating_sub(render_accounted_us);
-        let worst = profile.worst;
-        let (worst_cause, worst_cause_us) = [
-            ("outside", worst.outside_us),
-            ("tasks", worst.tasks_us),
-            ("network", worst.network_us),
-            ("world", worst.world_us),
-            ("tick", worst.tick_us),
-            ("sync", worst.sync_us),
-            ("render", worst.render_us),
-            ("other", worst.other_us),
-        ]
-        .into_iter()
-        .max_by_key(|(_, duration)| *duration)
-        .unwrap_or(("none", 0));
-        font_gui.fill_rect(pad, pad, 350.0 * gs, panel_h, [0.0, 0.0, 0.0, 0.5]);
-        font_gui.draw_text(
-            &mut self.font,
-            pad + 4.0 * gs,
-            pad + 3.0 * gs,
-            &format!(
-                "fps:{} 1%:{:.0} 0.1%:{:.0} p99:{:.2} p99.9:{:.2} max:{:.2}ms n:{}",
-                self.state.hud.fps_count(),
+        let chunks = profile.chunk_count_loaded;
+        let entities = self.state.hud.debug_entity_count();
+        let pos = self.state.hud.debug_pos();
+        let bx = pos[0].floor() as i32;
+        let by = pos[1].floor() as i32;
+        let bz = pos[2].floor() as i32;
+        let cx = bx >> 4;
+        let cy = by >> 4;
+        let cz = bz >> 4;
+        let lx = bx & 15;
+        let ly = by & 15;
+        let lz = bz & 15;
+        let (facing, towards) = facing_label(self.state.hud.debug_yaw());
+        let yaw = wrap_degrees(self.state.hud.debug_yaw());
+        let pitch = self.state.hud.debug_pitch().clamp(-90.0, 90.0);
+        let dim = match self.state.hud.dimension() {
+            -1 => "Nether",
+            1 => "The End",
+            _ => "Overworld",
+        };
+        let mut lines = vec![
+            format!("RustCraft {version} (Rust)"),
+            format!("{fps} fps"),
+            format!("C: {chunks} chunks loaded"),
+            format!("E: {entities} entities"),
+            format!("P: {} particles", self.state.frame_profile.completed_frame_profile().particle_count),
+            dim.to_string(),
+            String::new(),
+            format!("XYZ: {:.3} / {:.5} / {:.3}", pos[0], pos[1], pos[2]),
+            format!("Block: {bx} {by} {bz}"),
+            format!("Chunk: {lx} {ly} {lz} in {cx} {cy} {cz}"),
+            format!("Facing: {facing} ({towards}) ({yaw:.1} / {pitch:.1})"),
+            format!("Biome: {}", biome_name(self.state.hud.debug_biome_id())),
+            format!(
+                "Light: {} ({} sky, {} block)",
+                self.state.hud.debug_light_combined(),
+                self.state.hud.debug_light_sky(),
+                self.state.hud.debug_light_block()
+            ),
+            format!(
+                "Local Difficulty: {} (Day {})",
+                self.state.settings.difficulty(),
+                self.state.hud.world_time() / 24000
+            ),
+            format!(
+                "Time: {} day {}",
+                self.state.hud.day_time(),
+                self.state.hud.world_time() / 24000
+            ),
+            format!(
+                "Gamemode: {}",
+                gamemode_name(self.state.hud.gamemode()),
+            ),
+        ];
+        if let Some(look) = self.state.hud.debug_looking_at() {
+            lines.push(format!(
+                "Looking at: {} {} {}",
+                look[0], look[1], look[2]
+            ));
+        }
+        if let Some(name) = self.state.hud.debug_looking_block() {
+            lines.push(name.clone());
+        }
+        if let Some(spawn) = self.state.hud.spawn_position() {
+            lines.push(format!(
+                "Spawn: {}, {}, {}",
+                spawn[0], spawn[1], spawn[2]
+            ));
+        }
+        lines
+    }
+
+    fn debug_right_lines(&self, metrics: &MenuMetrics) -> Vec<String> {
+        let profile = self.state.frame_profile.completed_frame_profile();
+        let mem = process_memory_mb();
+        let mut lines = vec![
+            format!("Rust {}", rustc_version_string()),
+            format!(
+                "Mem: {:.0}MB used  frame:{:.1}ms",
+                mem,
+                profile.interval_us as f32 / 1000.0
+            ),
+            format!(
+                "1%: {:.0}  0.1%: {:.0}  p99: {:.1}ms",
                 profile.one_percent_low_fps,
                 profile.zero_point_one_percent_low_fps,
-                profile.p99_interval_us as f32 / 1000.0,
-                profile.p99_9_interval_us as f32 / 1000.0,
-                profile.max_interval_us as f32 / 1000.0,
-                profile.interval_sample_count,
+                profile.p99_interval_us as f32 / 1000.0
             ),
-            font_sz * 0.58,
-            [1.0, 1.0, 1.0, 1.0],
-        );
-        font_gui.draw_text(
-            &mut self.font,
-            pad + 4.0 * gs,
-            pad + 15.0 * gs,
-            &format!(
-                "app tasks:{} net:{} world:{} tick:{} sync:{} other:{}",
-                profile.tasks_us,
-                profile.network_us,
-                profile.world_us,
-                profile.tick_us,
-                profile.sync_us,
-                profile.other_us,
+            String::new(),
+            format!(
+                "Display: {}x{}",
+                metrics.sw as u32, metrics.sh as u32
             ),
-            font_sz * 0.52,
-            [0.85, 0.85, 0.65, 1.0],
-        );
-        font_gui.draw_text(
-            &mut self.font,
-            pad + 4.0 * gs,
-            pad + 27.0 * gs,
-            &format!(
-                "render:{} fence:{} acq:{} mesh:{} gui:{} cmd:{} sub:{} pres:{} other:{}",
+            "Vulkan".to_string(),
+            String::new(),
+            format!(
+                "Render: {}us  Mesh: {}us  Upload: {}KiB",
                 profile.render_us,
-                profile.fence_us,
-                profile.acquire_us,
                 profile.mesh_us,
-                profile.gui_us,
-                profile.command_us,
-                profile.submit_us,
-                profile.present_us,
-                render_other_us,
+                profile.chunk_upload_bytes / 1024
             ),
-            font_sz * 0.46,
-            [0.72, 0.86, 0.95, 1.0],
-        );
-        font_gui.draw_text(
-            &mut self.font,
-            pad + 4.0 * gs,
-            pad + 39.0 * gs,
-            &format!(
-                "entity total:{} loop:{} skin:{} extras:{} prune:{}",
-                profile.entity_us,
-                profile.entity_loop_us,
-                profile.entity_skin_sync_us,
-                profile.entity_extras_us,
-                profile.entity_prune_us,
-            ),
-            font_sz * 0.52,
-            [0.85, 0.85, 0.85, 1.0],
-        );
-        font_gui.draw_text(
-            &mut self.font,
-            pad + 4.0 * gs,
-            pad + 51.0 * gs,
-            &format!(
-                "entity gen:{} up:{} hash:{} lookup:{} n:{} vis:{} cul:{} cache:{}/{} {}",
-                profile.entity_generate_us,
-                profile.entity_upload_us,
-                profile.entity_hash_us,
-                profile.entity_lookup_us,
-                profile.entity_count,
-                profile.entity_visible_count,
-                profile.entity_culled_count,
+            format!(
+                "Entity cache: {}/{}  culled: {}",
                 profile.entity_cache_hits,
                 profile.entity_cache_misses,
-                if profile.entity_batch_reused {
-                    "reuse"
-                } else {
-                    "build"
-                },
+                profile.entity_culled_count
             ),
-            font_sz * 0.46,
-            [0.85, 0.85, 0.65, 1.0],
-        );
-        font_gui.draw_text(
-            &mut self.font,
-            pad + 4.0 * gs,
-            pad + 63.0 * gs,
-            &format!(
-                "particle:{} {} n:{} local:{} {} nametag:{}",
-                profile.particle_us,
-                if profile.particle_batch_reused {
-                    "reuse"
-                } else {
-                    "build"
-                },
-                profile.particle_count,
-                profile.local_us,
-                if profile.local_batch_reused {
-                    "reuse"
-                } else {
-                    "build"
-                },
-                profile.nametag_us,
-            ),
-            font_sz * 0.52,
-            [0.72, 0.86, 0.95, 1.0],
-        );
-        font_gui.draw_text(
-            &mut self.font,
-            pad + 4.0 * gs,
-            pad + 75.0 * gs,
-            &format!(
-                "lua:{}us callbacks:{} slow>200us:{}",
-                profile.script_us, profile.script_callbacks, profile.script_slow_callbacks,
-            ),
-            font_sz * 0.52,
-            [0.85, 0.72, 0.95, 1.0],
-        );
-        font_gui.draw_text(
-            &mut self.font,
-            pad + 4.0 * gs,
-            pad + 87.0 * gs,
-            &format!(
-                "chunks:{} upload:{} {}KiB {}us",
-                profile.chunk_count_loaded,
-                profile.chunk_upload_count,
-                profile.chunk_upload_bytes / 1024,
-                profile.chunk_upload_us,
-            ),
-            font_sz * 0.52,
-            [0.72, 0.86, 0.95, 1.0],
-        );
-        font_gui.draw_text(
-            &mut self.font,
-            pad + 4.0 * gs,
-            pad + 99.0 * gs,
-            &format!(
-                "worst10s:{:.2}ms age:{:.1}s cause:{}:{} active:{} out:{} lua:{}",
-                worst.interval_us as f32 / 1000.0,
-                profile.worst_age_us as f32 / 1_000_000.0,
-                worst_cause,
-                worst_cause_us,
-                worst.total_us,
-                worst.outside_us,
-                worst.script_us,
-            ),
-            font_sz * 0.48,
-            [1.0, 0.72, 0.58, 1.0],
-        );
-        font_gui.draw_text(
-            &mut self.font,
-            pad + 4.0 * gs,
-            pad + 111.0 * gs,
-            &format!(
-                "W task:{} net:{} world:{} tick:{} sync:{} render:{} other:{} | R fence:{} acq:{} mesh:{} ent:{} gui:{} cmd:{} sub:{} pres:{} up:{}",
-                worst.tasks_us,
-                worst.network_us,
-                worst.world_us,
-                worst.tick_us,
-                worst.sync_us,
-                worst.render_us,
-                worst.other_us,
-                worst.fence_us,
-                worst.acquire_us,
-                worst.mesh_us,
-                worst.entity_us,
-                worst.gui_us,
-                worst.command_us,
-                worst.submit_us,
-                worst.present_us,
-                worst.chunk_upload_us,
-            ),
-            font_sz * 0.38,
-            [0.95, 0.72, 0.62, 1.0],
-        );
-        font_gui.draw_text(
-            &mut self.font,
-            pad + 4.0 * gs,
-            pad + 123.0 * gs,
-            &format!(
-                "E loop:{} hash:{} lookup:{} gen:{} up:{} skin:{} prune:{} extras:{} vis:{}/{}/{}",
-                worst.entity_loop_us,
-                worst.entity_hash_us,
-                worst.entity_lookup_us,
-                worst.entity_generate_us,
-                worst.entity_upload_us,
-                worst.entity_skin_sync_us,
-                worst.entity_prune_us,
-                worst.entity_extras_us,
-                worst.entity_cache_hits,
-                worst.entity_cache_misses,
-                worst.entity_visible_count + worst.entity_culled_count,
-            ),
-            font_sz * 0.36,
-            [0.95, 0.72, 0.62, 1.0],
-        );
-        font_gui.draw_text(
-            &mut self.font,
-            pad + 4.0 * gs,
-            pad + 135.0 * gs,
-            &format!(
-                "P {}:{}us units:{} hook:{} session:{} inv:{} entity:{} world:{} | sched:{} scan:{} handled:{} deferred:{}",
-                worst.network_packet_kind,
-                worst.network_packet_us,
-                worst.network_packet_units,
-                worst.network_hook_us,
-                worst.network_session_us,
-                worst.network_inventory_us,
-                worst.network_entity_us,
-                worst.network_world_us,
-                worst.network_scheduler_us,
-                worst.network_scanned_packets,
-                worst.network_handled_packets,
-                worst.network_deferred_packets,
-            ),
-            font_sz * 0.42,
-            [0.95, 0.78, 0.55, 1.0],
-        );
-        font_gui.draw_text(
-            &mut self.font,
-            pad + 4.0 * gs,
-            pad + 151.0 * gs,
-            &format!(
-                "World: {} dim {} gm {}",
-                self.state.hud.level_type(), self.state.hud.dimension(), self.state.hud.gamemode()
-            ),
-            font_sz * 0.68,
-            [0.75, 0.75, 0.75, 1.0],
-        );
-        font_gui.draw_text(
-            &mut self.font,
-            pad + 4.0 * gs,
-            pad + 162.0 * gs,
-            &format!("Time: {} / {}", self.state.hud.world_time(), self.state.hud.day_time()),
-            font_sz * 0.68,
-            [0.75, 0.75, 0.75, 1.0],
-        );
-        if let Some(spawn) = self.state.hud.spawn_position() {
-            font_gui.draw_text(
-                &mut self.font,
-                pad + 4.0 * gs,
-                pad + 173.0 * gs,
-                &format!("Spawn: {}, {}, {}", spawn[0], spawn[1], spawn[2]),
-                font_sz * 0.68,
-                [0.75, 0.75, 0.75, 1.0],
-            );
-        }
-        font_gui.draw_text(
-            &mut self.font,
-            pad + 4.0 * gs,
-            pad + 185.0 * gs,
-            &format!("Sounds played: {}", self.state.hud.sound_event_count()),
-            font_sz * 0.62,
-            [0.70, 0.82, 0.95, 1.0],
-        );
-        if let Some(sound) = self.state.hud.recent_sounds().first() {
-            font_gui.draw_text(
-                &mut self.font,
-                pad + 4.0 * gs,
-                pad + 183.0 * gs,
-                sound,
-                font_sz * 0.58,
-                [0.64, 0.64, 0.64, 1.0],
-            );
-        }
-        font_gui.draw_text(
-            &mut self.font,
-            pad + 4.0 * gs,
-            pad + 193.0 * gs,
-            &format!(
-                "Border: {:.0} @ {:.0},{:.0}",
-                self.state.hud.world_border_diameter(),
-                self.state.hud.world_border_center()[0],
-                self.state.hud.world_border_center()[1]
-            ),
-            font_sz * 0.58,
-            [0.70, 0.70, 0.70, 1.0],
-        );
+        ];
         if let Some(brand) = self.state.server_list.server_brand().clone() {
-            font_gui.draw_text(
-                &mut self.font,
-                pad + 4.0 * gs,
-                pad + 203.0 * gs,
-                &format!("Server: {}", brand),
-                font_sz * 0.58,
-                [0.70, 0.82, 0.95, 1.0],
-            );
+            lines.push(String::new());
+            lines.push(format!("Server: {brand}"));
         }
         if let Some(pack) = self.state.server_list.resource_pack_status().clone() {
-            font_gui.draw_text(
-                &mut self.font,
-                pad + 4.0 * gs,
-                pad + 213.0 * gs,
-                &format!("Pack: {}", pack),
-                font_sz * 0.54,
-                [0.65, 0.65, 0.65, 1.0],
-            );
+            lines.push(format!("Pack: {pack}"));
         }
-        if !self.state.hud.player_list().is_empty() {
-            font_gui.draw_text(
-                &mut self.font,
-                pad + 4.0 * gs,
-                pad + 225.0 * gs,
-                &format!(
-                    "Online: {}/{}",
-                    self.state.hud.player_list().len(),
-                    self.state
-                        .hud
-                        .max_players()
-                        .max(self.state.hud.player_list().len() as u8)
-                ),
-                font_sz * 0.68,
-                [0.75, 0.9, 1.0, 1.0],
-            );
-            for (i, (name, ping, _gamemode)) in self.state.hud.player_list().iter().take(3).enumerate() {
-                font_gui.draw_text(
-                    &mut self.font,
-                    pad + 4.0 * gs,
-                    pad + (237.0 + i as f32 * 10.0) * gs,
-                    &format!("{}  {}ms", name, ping),
-                    font_sz * 0.62,
-                    [0.72, 0.72, 0.72, 1.0],
-                );
+        lines
+    }
+}
+
+fn facing_label(yaw_deg: f32) -> (&'static str, &'static str) {
+    let y = wrap_degrees(yaw_deg);
+    let idx = ((y + 180.0) / 90.0).floor() as i32 & 3;
+    match idx {
+        0 => ("north", "Towards negative Z"),
+        1 => ("east", "Towards positive X"),
+        2 => ("south", "Towards positive Z"),
+        _ => ("west", "Towards negative X"),
+    }
+}
+
+fn wrap_degrees(mut deg: f32) -> f32 {
+    deg = deg.rem_euclid(360.0);
+    if deg >= 180.0 {
+        deg - 360.0
+    } else {
+        deg
+    }
+}
+
+fn gamemode_name(gm: u8) -> &'static str {
+    match gm {
+        0 => "survival",
+        1 => "creative",
+        2 => "adventure",
+        3 => "spectator",
+        _ => "unknown",
+    }
+}
+
+fn biome_name(id: u8) -> &'static str {
+    match id {
+        0 => "Ocean",
+        1 => "Plains",
+        2 => "Desert",
+        3 => "Extreme Hills",
+        4 => "Forest",
+        5 => "Taiga",
+        6 => "Swampland",
+        7 => "River",
+        8 => "Hell",
+        9 => "The End",
+        10 => "FrozenOcean",
+        11 => "FrozenRiver",
+        12 => "Ice Plains",
+        13 => "Ice Mountains",
+        14 => "MushroomIsland",
+        15 => "MushroomIslandShore",
+        16 => "Beach",
+        17 => "DesertHills",
+        18 => "ForestHills",
+        19 => "TaigaHills",
+        20 => "Extreme Hills Edge",
+        21 => "Jungle",
+        22 => "JungleHills",
+        23 => "JungleEdge",
+        24 => "Deep Ocean",
+        25 => "Stone Beach",
+        26 => "Cold Beach",
+        27 => "Birch Forest",
+        28 => "Birch Forest Hills",
+        29 => "Roofed Forest",
+        30 => "Cold Taiga",
+        31 => "Cold Taiga Hills",
+        32 => "Mega Taiga",
+        33 => "Mega Taiga Hills",
+        34 => "Extreme Hills+",
+        35 => "Savanna",
+        36 => "Savanna Plateau",
+        37 => "Mesa",
+        38 => "Mesa Plateau F",
+        39 => "Mesa Plateau",
+        129 => "Sunflower Plains",
+        130 => "Desert M",
+        131 => "Extreme Hills M",
+        132 => "Flower Forest",
+        133 => "Taiga M",
+        134 => "Swampland M",
+        140 => "Ice Plains Spikes",
+        149 => "Jungle M",
+        151 => "JungleEdge M",
+        155 => "Birch Forest M",
+        156 => "Birch Forest Hills M",
+        157 => "Roofed Forest M",
+        158 => "Cold Taiga M",
+        160 => "Mega Spruce Taiga",
+        161 => "Redwood Taiga Hills M",
+        162 => "Extreme Hills+ M",
+        163 => "Savanna M",
+        164 => "Savanna Plateau M",
+        165 => "Mesa (Bryce)",
+        166 => "Mesa Plateau F M",
+        167 => "Mesa Plateau M",
+        _ => "Unknown",
+    }
+}
+
+fn rustc_version_string() -> String {
+    format!("{}-bit", std::mem::size_of::<usize>() * 8)
+}
+
+fn process_memory_mb() -> f64 {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(status) = std::fs::read_to_string("/proc/self/status") {
+            for line in status.lines() {
+                if let Some(rest) = line.strip_prefix("VmRSS:") {
+                    let kb: f64 = rest
+                        .split_whitespace()
+                        .next()
+                        .and_then(|s| s.parse().ok())
+                        .unwrap_or(0.0);
+                    return kb / 1024.0;
+                }
             }
         }
-
-        let face_px = 3.0 * gs;
-        let face_x = pad + 316.0 * gs;
-        let face_y = pad + 6.0 * gs;
-        font_gui.fill_rect(
-            face_x - 1.0 * gs,
-            face_y - 1.0 * gs,
-            face_px * 8.0 + 2.0 * gs,
-            face_px * 8.0 + 2.0 * gs,
-            [0.0, 0.0, 0.0, 0.65],
-        );
-        font_gui.draw_pixel_face(face_x, face_y, face_px, &self.state.settings.local_skin_face());
     }
+    0.0
 }

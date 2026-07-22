@@ -642,7 +642,11 @@ impl App {
             }
             GameState::MainMenu if action == Some(Action::Pause) => {
                 self.renderer = None;
-                self.net_ctrl.connection = None;
+                self.net_ctrl.connect_task = None;
+                if let Some(conn) = self.net_ctrl.connection.take() {
+                    conn.close();
+                    drop(conn);
+                }
                 event_loop.exit();
             }
             _ => {}

@@ -716,9 +716,9 @@ impl Block {
             Block::Log3 => (t("log_acacia_top"), t("log_acacia_top"), t("log_acacia")),
             Block::EnderChest => (t("obsidian"), t("obsidian"), t("obsidian")),
             Block::PistonExtension => (
-                t("piston_top_sticky"),
-                t("piston_top_sticky"),
-                t("piston_top_sticky"),
+                t("piston_top_normal"),
+                t("piston_bottom"),
+                t("piston_side"),
             ),
             Block::StainedGlass => (t("glass"), t("glass"), t("glass")),
             Block::AcaciaStairs => (t("planks_acacia"), t("planks_acacia"), t("planks_acacia")),
