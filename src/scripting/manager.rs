@@ -254,16 +254,10 @@ impl ScriptManager {
             .set_snapshot_reusing_blocks(snapshot)
     }
 
-    pub fn update_world_snapshot_patching_blocks(&self, snapshot: WorldSnapshot) -> bool {
+    pub fn update_world_snapshot_merging_blocks(&self, snapshot: WorldSnapshot) -> bool {
         self.world_state
             .borrow_mut()
-            .set_snapshot_patching_blocks(snapshot)
-    }
-
-    pub fn update_world_snapshot_shifting_blocks(&self, snapshot: WorldSnapshot) -> bool {
-        self.world_state
-            .borrow_mut()
-            .set_snapshot_shifting_blocks(snapshot)
+            .set_snapshot_merging_blocks(snapshot)
     }
 
     pub fn has_world_snapshot(&self) -> bool {

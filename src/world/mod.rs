@@ -17,8 +17,8 @@ use mesh::{ChunkMesh, MeshOptions};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{mpsc, Arc, Mutex};
 
-const MAX_NORMAL_BACKGROUND_MESH_JOBS: usize = 2;
-const MAX_PRIORITY_BACKGROUND_MESH_JOBS: usize = 1;
+const MAX_NORMAL_BACKGROUND_MESH_JOBS: usize = 6;
+const MAX_PRIORITY_BACKGROUND_MESH_JOBS: usize = 2;
 const MAX_MESH_RESULTS_PER_FRAME: usize =
     MAX_NORMAL_BACKGROUND_MESH_JOBS + MAX_PRIORITY_BACKGROUND_MESH_JOBS;
 const MAX_MESH_REMOVALS_PER_FRAME: usize = 16;

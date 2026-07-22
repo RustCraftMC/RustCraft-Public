@@ -3,6 +3,7 @@
 #![allow(unused_variables)]
 #![allow(unused_mut)]
 #![allow(unreachable_patterns)]
+mod abstractions;
 mod assets;
 mod audio;
 mod auth;
@@ -21,6 +22,18 @@ fn main() {
     configure_runtime_directory();
     logging::log_startup_context();
 
+    // Disable NVIDIA/ third-party implicit Vulkan layers that can corrupt
+    // swapchain flags and cause access violations at queue_submit time.
+    // These layers inject VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR into
+    // swapchain creation and can crash inside vk_gr2608GetInstanceProcAddr.
+    unsafe {
+        std::env::set_var("DISABLE_LAYER_NV_OPTIMUS_1", "1");
+        std::env::set_var("DISABLE_LAYER_NV_PRESENT_1", "1");
+        std::env::set_var("DISABLE_VULKAN_OBS_CAPTURE", "1");
+        std::env::set_var("DISABLE_GAMEPP_LAYER", "1");
+    }
+    log::debug!("disabled known conflicting implicit Vulkan layers");
+
     // Limit Rayon's global thread pool to leave at least one logical core for
     // the render/main thread. Without this, Rayon's mesh builders compete with
     // the event loop for CPU time, which inflifies `outside` frame spikes under
@@ -38,18 +51,6 @@ fn main() {
     } else {
         log::info!("rayon thread pool configured: {rayon_threads} workers (cpu_count={cpu_count})");
     }
-
-    // Disable NVIDIA/ third-party implicit Vulkan layers that can corrupt
-    // swapchain flags and cause access violations at queue_submit time.
-    // These layers inject VK_SWAPCHAIN_CREATE_MUTABLE_FORMAT_BIT_KHR into
-    // swapchain creation and can crash inside vk_gr2608GetInstanceProcAddr.
-    unsafe {
-        std::env::set_var("DISABLE_LAYER_NV_OPTIMUS_1", "1");
-        std::env::set_var("DISABLE_LAYER_NV_PRESENT_1", "1");
-        std::env::set_var("DISABLE_VULKAN_OBS_CAPTURE", "1");
-        std::env::set_var("DISABLE_GAMEPP_LAYER", "1");
-    }
-    log::debug!("disabled known conflicting implicit Vulkan layers");
 
     let exit_code = client::app::run();
     log::info!("RustCraft shutting down with exit code {exit_code}");

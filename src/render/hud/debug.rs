@@ -8,7 +8,7 @@ impl Renderer {
         metrics: &MenuMetrics,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        let base_panel_h: f32 = if self.state.player_list.is_empty() {
+        let base_panel_h: f32 = if self.state.hud.player_list().is_empty() {
             240.0
         } else {
             278.0
@@ -20,7 +20,7 @@ impl Renderer {
         let font_sz = 9.0 * gs;
         let pad = 4.0 * gs;
         let panel_h = base_panel_h * gs;
-        let profile = self.state.completed_frame_profile;
+        let profile = self.state.frame_profile.completed_frame_profile();
         let frame_cap = profile.max_framerate.max(30);
         let target_us = 1_000_000u64 / u64::from(frame_cap);
         let over_target_us = profile.interval_us.saturating_sub(target_us);
@@ -54,7 +54,7 @@ impl Renderer {
             pad + 3.0 * gs,
             &format!(
                 "fps:{} 1%:{:.0} 0.1%:{:.0} p99:{:.2} p99.9:{:.2} max:{:.2}ms n:{}",
-                self.state.fps_count,
+                self.state.hud.fps_count(),
                 profile.one_percent_low_fps,
                 profile.zero_point_one_percent_low_fps,
                 profile.p99_interval_us as f32 / 1000.0,
@@ -280,7 +280,7 @@ impl Renderer {
             pad + 151.0 * gs,
             &format!(
                 "World: {} dim {} gm {}",
-                self.state.level_type, self.state.dimension, self.state.gamemode
+                self.state.hud.level_type(), self.state.hud.dimension(), self.state.hud.gamemode()
             ),
             font_sz * 0.68,
             [0.75, 0.75, 0.75, 1.0],
@@ -289,11 +289,11 @@ impl Renderer {
             &mut self.font,
             pad + 4.0 * gs,
             pad + 162.0 * gs,
-            &format!("Time: {} / {}", self.state.world_time, self.state.day_time),
+            &format!("Time: {} / {}", self.state.hud.world_time(), self.state.hud.day_time()),
             font_sz * 0.68,
             [0.75, 0.75, 0.75, 1.0],
         );
-        if let Some(spawn) = self.state.spawn_position {
+        if let Some(spawn) = self.state.hud.spawn_position() {
             font_gui.draw_text(
                 &mut self.font,
                 pad + 4.0 * gs,
@@ -307,11 +307,11 @@ impl Renderer {
             &mut self.font,
             pad + 4.0 * gs,
             pad + 185.0 * gs,
-            &format!("Sounds played: {}", self.state.sound_event_count),
+            &format!("Sounds played: {}", self.state.hud.sound_event_count()),
             font_sz * 0.62,
             [0.70, 0.82, 0.95, 1.0],
         );
-        if let Some(sound) = self.state.recent_sounds.first() {
+        if let Some(sound) = self.state.hud.recent_sounds().first() {
             font_gui.draw_text(
                 &mut self.font,
                 pad + 4.0 * gs,
@@ -327,14 +327,14 @@ impl Renderer {
             pad + 193.0 * gs,
             &format!(
                 "Border: {:.0} @ {:.0},{:.0}",
-                self.state.world_border_diameter,
-                self.state.world_border_center[0],
-                self.state.world_border_center[1]
+                self.state.hud.world_border_diameter(),
+                self.state.hud.world_border_center()[0],
+                self.state.hud.world_border_center()[1]
             ),
             font_sz * 0.58,
             [0.70, 0.70, 0.70, 1.0],
         );
-        if let Some(brand) = self.state.server_brand.clone() {
+        if let Some(brand) = self.state.server_list.server_brand().clone() {
             font_gui.draw_text(
                 &mut self.font,
                 pad + 4.0 * gs,
@@ -344,7 +344,7 @@ impl Renderer {
                 [0.70, 0.82, 0.95, 1.0],
             );
         }
-        if let Some(pack) = self.state.resource_pack_status.clone() {
+        if let Some(pack) = self.state.server_list.resource_pack_status().clone() {
             font_gui.draw_text(
                 &mut self.font,
                 pad + 4.0 * gs,
@@ -354,22 +354,23 @@ impl Renderer {
                 [0.65, 0.65, 0.65, 1.0],
             );
         }
-        if !self.state.player_list.is_empty() {
+        if !self.state.hud.player_list().is_empty() {
             font_gui.draw_text(
                 &mut self.font,
                 pad + 4.0 * gs,
                 pad + 225.0 * gs,
                 &format!(
                     "Online: {}/{}",
-                    self.state.player_list.len(),
+                    self.state.hud.player_list().len(),
                     self.state
-                        .max_players
-                        .max(self.state.player_list.len() as u8)
+                        .hud
+                        .max_players()
+                        .max(self.state.hud.player_list().len() as u8)
                 ),
                 font_sz * 0.68,
                 [0.75, 0.9, 1.0, 1.0],
             );
-            for (i, (name, ping, _gamemode)) in self.state.player_list.iter().take(3).enumerate() {
+            for (i, (name, ping, _gamemode)) in self.state.hud.player_list().iter().take(3).enumerate() {
                 font_gui.draw_text(
                     &mut self.font,
                     pad + 4.0 * gs,
@@ -391,6 +392,6 @@ impl Renderer {
             face_px * 8.0 + 2.0 * gs,
             [0.0, 0.0, 0.0, 0.65],
         );
-        font_gui.draw_pixel_face(face_x, face_y, face_px, &self.state.local_skin_face);
+        font_gui.draw_pixel_face(face_x, face_y, face_px, &self.state.settings.local_skin_face());
     }
 }

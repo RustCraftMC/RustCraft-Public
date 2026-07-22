@@ -416,228 +416,6 @@ fn block_step_sound(block: Block) -> &'static str {
     block.sound_type().step_event()
 }
 
-// Kept temporarily for comparison while the complete registry mapping is
-// migrated. Runtime code uses `Block::sound_type` above.
-#[allow(dead_code)]
-fn legacy_block_dig_sound(block: Block) -> &'static str {
-    match block {
-        Block::Stone
-        | Block::Cobblestone
-        | Block::Bedrock
-        | Block::GoldOre
-        | Block::IronOre
-        | Block::CoalOre
-        | Block::LapisOre
-        | Block::DiamondOre
-        | Block::RedstoneOre
-        | Block::LitRedstoneOre
-        | Block::Obsidian
-        | Block::StoneBricks
-        | Block::Bricks
-        | Block::MossyCobblestone
-        | Block::Sandstone
-        | Block::DoubleStoneSlab
-        | Block::StoneSlab
-        | Block::StoneButton
-        | Block::StonePressurePlate
-        | Block::IronBlock
-        | Block::GoldBlock
-        | Block::DiamondBlock
-        | Block::LapisBlock
-        | Block::NetherBrick
-        | Block::Dispenser
-        | Block::Furnace
-        | Block::LitFurnace
-        | Block::MobSpawner
-        | Block::Cauldron
-        | Block::EnchantingTable
-        | Block::BrewingStand
-        | Block::IronBars
-        | Block::GlassPane
-        | Block::PoweredRail
-        | Block::DetectorRail
-        | Block::Rail
-        | Block::StandingSign
-        | Block::WallSign
-        | Block::MonsterEgg
-        | Block::NetherBrickFence
-        | Block::NetherBrickStairs
-        | Block::StoneBrickStairs
-        | Block::BrickStairs
-        | Block::CobblestoneStairs
-        | Block::IronDoor
-        | Block::Chest
-        | Block::StickyPiston
-        | Block::Piston
-        | Block::PistonHead
-        | Block::PistonExtension
-        | Block::SnowBlock
-        | Block::SnowLayer
-        | Block::PackedIce
-        | Block::Ice
-        | Block::Clay
-        | Block::QuartzOre => "dig.stone",
-
-        Block::Grass
-        | Block::Dirt
-        | Block::Farmland
-        | Block::Mycelium
-        | Block::SoulSand
-        | Block::TallGrass
-        | Block::DeadBush
-        | Block::HayBlock => "dig.grass",
-
-        Block::Planks
-        | Block::Log
-        | Block::Log2
-        | Block::Bookshelf
-        | Block::CraftingTable
-        | Block::OakDoor
-        | Block::Trapdoor
-        | Block::OakFence
-        | Block::OakStairs
-        | Block::WoodenPressurePlate
-        | Block::NoteBlock
-        | Block::Jukebox
-        | Block::Torch
-        | Block::UnlitRedstoneTorch
-        | Block::RedstoneTorch
-        | Block::Ladder
-        | Block::Lever
-        | Block::WoodenButton
-        | Block::SugarCane
-        | Block::Cactus
-        | Block::Cake
-        | Block::UnpoweredRepeater
-        | Block::PoweredRepeater
-        | Block::Pumpkin
-        | Block::JackOLantern
-        | Block::MelonBlock
-        | Block::Vine
-        | Block::LilyPad
-        | Block::BrownMushroom
-        | Block::RedMushroom
-        | Block::NetherWart => "dig.wood",
-
-        Block::Gravel => "dig.gravel",
-        Block::Sand => "dig.sand",
-        Block::Wool | Block::Cobweb => "dig.cloth",
-        Block::Glass | Block::Tnt => "dig.glass",
-
-        _ => "dig.stone",
-    }
-}
-
-#[allow(dead_code)]
-fn legacy_block_step_sound(block: Block) -> &'static str {
-    match block {
-        Block::Stone
-        | Block::Cobblestone
-        | Block::Bedrock
-        | Block::GoldOre
-        | Block::IronOre
-        | Block::CoalOre
-        | Block::LapisOre
-        | Block::DiamondOre
-        | Block::RedstoneOre
-        | Block::LitRedstoneOre
-        | Block::Obsidian
-        | Block::StoneBricks
-        | Block::Bricks
-        | Block::MossyCobblestone
-        | Block::Sandstone
-        | Block::DoubleStoneSlab
-        | Block::StoneSlab
-        | Block::StoneButton
-        | Block::StonePressurePlate
-        | Block::IronBlock
-        | Block::GoldBlock
-        | Block::DiamondBlock
-        | Block::LapisBlock
-        | Block::NetherBrick
-        | Block::Dispenser
-        | Block::Furnace
-        | Block::LitFurnace
-        | Block::MobSpawner
-        | Block::Cauldron
-        | Block::EnchantingTable
-        | Block::BrewingStand
-        | Block::IronBars
-        | Block::GlassPane
-        | Block::PoweredRail
-        | Block::DetectorRail
-        | Block::Rail
-        | Block::StandingSign
-        | Block::WallSign
-        | Block::MonsterEgg
-        | Block::NetherBrickFence
-        | Block::NetherBrickStairs
-        | Block::StoneBrickStairs
-        | Block::BrickStairs
-        | Block::CobblestoneStairs
-        | Block::IronDoor
-        | Block::Chest
-        | Block::StickyPiston
-        | Block::Piston
-        | Block::PistonHead
-        | Block::PistonExtension
-        | Block::SnowBlock
-        | Block::SnowLayer
-        | Block::PackedIce
-        | Block::HayBlock
-        | Block::Ice
-        | Block::Clay
-        | Block::QuartzOre => "step.stone",
-
-        Block::Grass
-        | Block::Dirt
-        | Block::Farmland
-        | Block::Mycelium
-        | Block::SoulSand
-        | Block::TallGrass
-        | Block::DeadBush
-        | Block::HayBlock
-        | Block::Planks
-        | Block::Log
-        | Block::Log2
-        | Block::Bookshelf
-        | Block::CraftingTable
-        | Block::OakDoor
-        | Block::Trapdoor
-        | Block::OakFence
-        | Block::OakStairs
-        | Block::WoodenPressurePlate
-        | Block::NoteBlock
-        | Block::Jukebox
-        | Block::Torch
-        | Block::UnlitRedstoneTorch
-        | Block::RedstoneTorch
-        | Block::Ladder
-        | Block::Lever
-        | Block::WoodenButton
-        | Block::SugarCane
-        | Block::Cactus
-        | Block::Cake
-        | Block::UnpoweredRepeater
-        | Block::PoweredRepeater
-        | Block::Pumpkin
-        | Block::JackOLantern
-        | Block::MelonBlock
-        | Block::Vine
-        | Block::LilyPad
-        | Block::BrownMushroom
-        | Block::RedMushroom
-        | Block::NetherWart => "step.wood",
-
-        Block::Gravel => "step.gravel",
-        Block::Sand => "step.sand",
-        Block::Wool | Block::Cobweb => "step.cloth",
-        Block::Glass | Block::Tnt => "step.stone",
-
-        _ => "step.grass",
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct ItemUseTickPlan {
     release: bool,
@@ -763,12 +541,12 @@ impl App {
         // left by the previous creative break. The delay applies only to the
         // sustained-held path in onPlayerDamageBlock.
         let creative_click =
-            self.session.gamemode == 1 && self.input.is_just_pressed(Action::Attack);
+            self.session.gamemode == 1 && self.input_ctrl.input.is_just_pressed(Action::Attack);
         if self.block_hit_delay > 0 && !creative_click {
             self.block_hit_delay -= 1;
             let hit = hit.expect("validated above");
             self.spawn_block_hit_feedback(hit);
-            client::network::send_animation(&self.connection);
+            client::network::send_animation(&self.net_ctrl.connection);
             return Vec::new();
         }
 
@@ -786,8 +564,8 @@ impl App {
                 return Vec::new();
             }
             if let Some(hit) = hit {
-                client::network::send_animation(&self.connection);
-                client::network::send_digging_start(&self.connection, hit.pos, hit.face);
+                client::network::send_animation(&self.net_ctrl.connection);
+                client::network::send_digging_start(&self.net_ctrl.connection, hit.pos, hit.face);
                 return self.finish_digging(hit, false);
             }
         }
@@ -813,18 +591,18 @@ impl App {
                 .start
                 .map(|start| start.face)
                 .unwrap_or(client::physics::BlockFace::Bottom);
-            client::network::send_digging_cancel(&self.connection, cancel.pos, face);
+            client::network::send_digging_cancel(&self.net_ctrl.connection, cancel.pos, face);
         }
         if let Some(start) = update.start {
             // Initial clickMouse swings before START. A held-target/item
             // change instead runs clickBlock first (ABORT -> START), then the
             // outer sendClickBlockToController swing.
             if !restarted {
-                client::network::send_animation(&self.connection);
+                client::network::send_animation(&self.net_ctrl.connection);
             }
-            client::network::send_digging_start(&self.connection, start.pos, start.face);
+            client::network::send_digging_start(&self.net_ctrl.connection, start.pos, start.face);
             if restarted {
-                client::network::send_animation(&self.connection);
+                client::network::send_animation(&self.net_ctrl.connection);
             }
             self.spawn_block_hit_feedback(start);
         }
@@ -847,13 +625,13 @@ impl App {
             // During sustained mining, Minecraft sends its C0A after the
             // STOP_DESTROY_BLOCK packet for the completing tick.
             if update.start.is_none() {
-                client::network::send_animation(&self.connection);
+                client::network::send_animation(&self.net_ctrl.connection);
             }
             return meshes;
         }
         if update.start.is_none() && self.dig.active_pos().is_some() {
             // sendClickBlockToController swings once for every held mining tick.
-            client::network::send_animation(&self.connection);
+            client::network::send_animation(&self.net_ctrl.connection);
         }
 
         Vec::new()
@@ -909,7 +687,7 @@ impl App {
         // PlayerControllerMP.attackEntity never brackets C02 with release-use
         // and resume-use packets. Interleaving those C07/C08 packets with an
         // active dig trips packet-order simulation checks on servers.
-        client::network::send_use_entity_attack(&self.connection, entity_target.entity_id);
+        client::network::send_use_entity_attack(&self.net_ctrl.connection, entity_target.entity_id);
         // EntityLivingBase.attackEntityFrom returns false in a remote world, so
         // ordinary mobs do not run the attacker's knockback slowdown locally.
         // EntityOtherPlayerMP overrides it to true; the remaining listed types
@@ -952,7 +730,7 @@ impl App {
             self.player.velocity.y,
             self.player.velocity.z,
         );
-        if let Some(entity) = self.entities.get_mut(entity_target.entity_id) {
+        if let Some(mut entity) = self.entities.get_mut(entity_target.entity_id) {
             // Target hurt animation is authoritative: the server emits
             // EntityStatus(2) only when this attack actually dealt damage.
             entity.mark_attack_pending();
@@ -1000,11 +778,11 @@ impl App {
         // rightClickMouse first sends INTERACT_AT, then falls back to INTERACT
         // when the client-side entity handler does not consume that hit.
         client::network::send_use_entity_interact_at(
-            &self.connection,
+            &self.net_ctrl.connection,
             entity_target.entity_id,
             relative_hit,
         );
-        client::network::send_use_entity_interact(&self.connection, entity_target.entity_id);
+        client::network::send_use_entity_interact(&self.net_ctrl.connection, entity_target.entity_id);
         // Do NOT consume the right-click — let the item-use path
         // (sword blocking, eating, bow drawing, …) also run so that
         // the player can block while still sending the interact
@@ -1042,7 +820,7 @@ impl App {
 
         if self.session.gamemode != 1 {
             if send_stop {
-                client::network::send_digging_finish(&self.connection, hit.pos, hit.face);
+                client::network::send_digging_finish(&self.net_ctrl.connection, hit.pos, hit.face);
             }
             // Vanilla PlayerControllerMP.onPlayerDestroyBlock calls
             // ItemStack.onBlockDestroyed outside creative, wearing down the
@@ -1085,7 +863,7 @@ impl App {
     fn cancel_digging_now(&mut self) {
         if let Some(hit) = self.dig.cancel() {
             client::network::send_digging_cancel(
-                &self.connection,
+                &self.net_ctrl.connection,
                 hit.pos,
                 client::physics::BlockFace::Bottom,
             );
@@ -1094,7 +872,7 @@ impl App {
 
     pub(super) fn flush_pending_dig_cancel(&mut self) {
         if let Some((pos, face)) = self.pending_dig_cancel.take() {
-            client::network::send_digging_cancel(&self.connection, pos, face);
+            client::network::send_digging_cancel(&self.net_ctrl.connection, pos, face);
         }
     }
 
@@ -1133,7 +911,7 @@ impl App {
             self.inventory.pending_chest_position =
                 crate::world::is_chest_block(clicked_block).then_some(hit.pos);
             client::network::send_block_placement_slot(
-                &self.connection,
+                &self.net_ctrl.connection,
                 &self.inventory.protocol_slot_for_selected_item(),
                 hit.pos,
                 hit.face,
@@ -1149,7 +927,7 @@ impl App {
         // PlayerControllerMP skips ItemBlock.onItemUse when the clicked block
         // consumes activation. Sneaking with a held item bypasses activation.
         let predicts_item_use =
-            self.input.is_held(Action::Sneak) || !block_may_consume_activation(clicked_block);
+            self.input_ctrl.input.is_held(Action::Sneak) || !block_may_consume_activation(clicked_block);
         let held_slot = self.inventory.protocol_slot_for_selected_item();
         let mut predicted_placement = None;
         if predicts_item_use {
@@ -1214,7 +992,7 @@ impl App {
                         placement_pos,
                         &player_box,
                     );
-                    for entity in self.entities.entities.values() {
+                    for (_entity_id, entity) in self.entities.iter() {
                         if blocked
                             || Some(entity.entity_id) == self.session.entity_id
                             || !entity_prevents_block_placement(entity.entity_type)
@@ -1258,7 +1036,7 @@ impl App {
         self.inventory.pending_chest_position =
             (!predicts_item_use && crate::world::is_chest_block(clicked_block)).then_some(hit.pos);
         client::network::send_block_placement_slot(
-            &self.connection,
+            &self.net_ctrl.connection,
             &held_slot,
             hit.pos,
             hit.face,
@@ -1286,9 +1064,9 @@ impl App {
                 self.inventory.remove_selected_one();
             }
         }
-        if self.connection.is_some() && self.session.gamemode == 1 {
+        if self.net_ctrl.connection.is_some() && self.session.gamemode == 1 {
             client::network::send_creative_inventory_action_slot(
-                &self.connection,
+                &self.net_ctrl.connection,
                 36 + self.inventory.selected as i16,
                 &held_slot,
             );
@@ -1451,7 +1229,7 @@ impl App {
             if self.item_use_timer >= 1.6 {
                 self.item_use_timer = 0.0;
                 self.food_cooldown = 4;
-                if self.connection.is_none() {
+                if self.net_ctrl.connection.is_none() {
                     // Offline: consume immediately. Online: the server sends
                     // S19 status 9 when the food is consumed; the client keeps
                     // item_use_active (and the 0.2 movement slowdown) until
@@ -1502,7 +1280,7 @@ impl App {
             || is_food(held_item_id)
             || is_drinkable(held_item_id, held_item_damage)
         {
-            client::network::send_release_use_item(&self.connection);
+            client::network::send_release_use_item(&self.net_ctrl.connection);
             self.use_release_pending = true;
             if held_item_id == 261 {
                 self.spawn_predicted_arrow(bow_charge);
@@ -1516,7 +1294,7 @@ impl App {
     /// Send a "use item" network packet (right-click without block target).
     pub(super) fn send_item_use_packet(&self) {
         let held = self.inventory.protocol_slot_for_selected_item();
-        client::network::send_use_item(&self.connection, &held);
+        client::network::send_use_item(&self.net_ctrl.connection, &held);
     }
 
     fn next_predicted_entity_id(&mut self) -> i32 {
@@ -1632,11 +1410,11 @@ impl App {
         );
         let held = self.inventory.protocol_slot_for_selected_item();
         let clicked_block = self.world.get_block(hit.pos.0, hit.pos.1, hit.pos.2);
-        self.inventory.pending_chest_position = (!self.input.is_held(Action::Sneak)
+        self.inventory.pending_chest_position = (!self.input_ctrl.input.is_held(Action::Sneak)
             && crate::world::is_chest_block(clicked_block))
         .then_some(hit.pos);
         client::network::send_block_placement_slot(
-            &self.connection,
+            &self.net_ctrl.connection,
             &held,
             hit.pos,
             hit.face,

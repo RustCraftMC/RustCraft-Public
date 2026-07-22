@@ -1,7 +1,10 @@
 pub mod material;
 pub mod properties;
+pub mod registry;
 pub mod sound;
 pub mod states;
+
+pub use registry::{BlockInfo, BlockRegistry};
 
 // Block type definitions — full MC 1.8.9 block registry.
 //

@@ -1,6 +1,7 @@
 use super::Block;
 
 /// Properties for a block type (used by the rendering and physics systems).
+#[derive(Clone, Debug)]
 pub struct BlockProperties {
     pub id: u16,
     pub name: &'static str,

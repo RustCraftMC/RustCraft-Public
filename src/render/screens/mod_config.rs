@@ -22,7 +22,7 @@ impl Renderer {
         let x = (sw - width) / 2.0;
         let list_y = 39.0 * gs;
         let list_height = (sh - 91.0 * gs).max(48.0 * gs);
-        let rows = self.state.mod_config_rows.clone();
+        let rows = self.state.server_list.mod_config_rows().clone();
         let list = GuiScrollList::new(
             x,
             list_y,
@@ -30,21 +30,30 @@ impl Renderer {
             list_height,
             48.0 * gs,
             rows.len(),
-            self.state.mod_config_scroll,
+            self.state.server_list.mod_config_scroll(),
         );
-        self.state.mod_config_scroll = list.first_row;
+        self.state.server_list.set_mod_config_scroll(list.first_row);
 
+        let text = self.state.settings.ui_text();
+        let title_fallback = text.get("rustcraft.modding.configTitle").to_string();
+        let subtitle_text = text.get("rustcraft.modding.configSubtitle").to_string();
+        let empty_text = text.get("rustcraft.modding.configEmpty").to_string();
+        let locked_text = text.get("rustcraft.modding.configLocked").to_string();
+        let hints_text = text.get("rustcraft.modding.configHints").to_string();
+        let reset_all_text = text.get("rustcraft.modding.resetAll").to_string();
+        let back_text = text.get("gui.back").to_string();
         let title = fit_text(
             &self.font,
             self.state
-                .mod_config_title
+                .server_list
+                .mod_config_title()
                 .as_deref()
-                .unwrap_or("Mod Configuration"),
+                .unwrap_or(title_fallback.as_str()),
             metrics.font_sz,
             width,
         );
         draw_title(
-            self,
+            &mut self.font,
             font_gui,
             sw / 2.0,
             14.0 * gs,
@@ -54,7 +63,7 @@ impl Renderer {
         );
         let subtitle = fit_text(
             &self.font,
-            "Settings are validated and saved in this mod's private data directory",
+            &subtitle_text,
             metrics.font_sz * 0.62,
             width,
         );
@@ -73,13 +82,13 @@ impl Renderer {
                 &mut self.font,
                 sw / 2.0,
                 list_y + 18.0 * gs,
-                "This mod does not expose configurable settings",
+                &empty_text,
                 metrics.font_sz * 0.82,
                 [0.68, 0.68, 0.68, 1.0],
             );
         } else {
-            let selected = self.state.mod_config_selected;
-            let locked = self.state.mod_config_locked;
+            let selected = self.state.server_list.mod_config_selected();
+            let locked = self.state.server_list.mod_config_locked();
             for index in list.visible_range() {
                 draw_config_row(
                     self,
@@ -100,12 +109,12 @@ impl Renderer {
         list.draw_scrollbar(font_gui, gs);
         list.draw_edge_fades(overlay_gui, gs);
 
-        let status = if self.state.mod_config_locked {
-            "Disconnect before editing a protocol translator's configuration".to_string()
-        } else if self.state.mod_config_status.is_empty() {
-            "Left/Right: change   R: reset   Esc: back".to_string()
+        let status = if self.state.server_list.mod_config_locked() {
+            locked_text
+        } else if self.state.server_list.mod_config_status().is_empty() {
+            hints_text
         } else {
-            self.state.mod_config_status.clone()
+            self.state.server_list.mod_config_status().clone()
         };
         let status = fit_text(&self.font, &status, metrics.font_sz * 0.68, width);
         font_gui.draw_text_centered(
@@ -114,7 +123,7 @@ impl Renderer {
             sh - 42.0 * gs,
             &status,
             metrics.font_sz * 0.68,
-            if self.state.mod_config_locked {
+            if self.state.server_list.mod_config_locked() {
                 [1.0, 0.68, 0.3, 1.0]
             } else {
                 [0.7, 0.7, 0.7, 1.0]
@@ -124,23 +133,23 @@ impl Renderer {
         let button_y = sh - 28.0 * gs;
         let half = (width - 4.0 * gs) / 2.0;
         draw_button_enabled(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
             btn::MOD_CONFIG_RESET_ALL,
             [x, button_y, half, metrics.btn_h],
-            "Reset all",
-            !self.state.mod_config_locked && rows.iter().any(|row| !row.is_default),
+            &reset_all_text,
+            !self.state.server_list.mod_config_locked() && rows.iter().any(|row| !row.is_default),
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
             btn::MOD_CONFIG_BACK,
             [x + half + 4.0 * gs, button_y, half, metrics.btn_h],
-            "Back",
+            &back_text,
         );
     }
 }
@@ -245,7 +254,7 @@ fn draw_config_row(
     let reset_width = 38.0 * gs;
     let value_width = controls_width - arrow_width * 2.0 - reset_width - 8.0 * gs;
     draw_button_enabled(
-        renderer,
+        &mut renderer.font,
         metrics,
         widget_gui,
         font_gui,
@@ -276,7 +285,7 @@ fn draw_config_row(
     );
     let next_x = value_x + value_width + 2.0 * gs;
     draw_button_enabled(
-        renderer,
+        &mut renderer.font,
         metrics,
         widget_gui,
         font_gui,
@@ -286,7 +295,7 @@ fn draw_config_row(
         !locked && row.can_next,
     );
     draw_button_enabled(
-        renderer,
+        &mut renderer.font,
         metrics,
         widget_gui,
         font_gui,

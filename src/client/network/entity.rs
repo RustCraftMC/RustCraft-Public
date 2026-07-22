@@ -2,6 +2,17 @@ use crate::audio::AudioBackend;
 use crate::client::session::SessionState;
 use crate::entity::{Entity, EntityEffectState, EntityManager, EntityType};
 use crate::net;
+use std::borrow::Cow;
+
+/// Sound event names reused on the entity-status hot path. Extracted as
+/// `const` so the matching packet handler does not reallocate the same
+/// `&'static str` on every hurt event.
+const SOUND_PLAYER_HURT: &str = "game.player.hurt";
+const SOUND_NEUTRAL_HURT: &str = "game.neutral.hurt";
+/// Fallback name shown when a player entity spawns before its GameProfile
+/// arrives. Kept as a `const` so the common `Cow::Borrowed` path avoids
+/// allocating a fresh `String`.
+const DEFAULT_PLAYER_NAME: &str = "Player";
 
 pub(super) fn handle_packet(
     entities: &mut EntityManager,
@@ -16,7 +27,7 @@ pub(super) fn handle_packet(
             entity_id,
             animation,
         } => {
-            if let Some(entity) = entities.get_mut(entity_id) {
+            if let Some(mut entity) = entities.get_mut(entity_id) {
                 entity.apply_animation(animation);
             }
         }
@@ -25,7 +36,7 @@ pub(super) fn handle_packet(
             slot,
             item,
         } => {
-            if let Some(entity) = entities.get_mut(entity_id) {
+            if let Some(mut entity) = entities.get_mut(entity_id) {
                 entity.set_equipment(slot, item);
             }
         }
@@ -60,12 +71,12 @@ pub(super) fn handle_packet(
                     .uuid
                     .as_deref()
                     .and_then(|uuid| session.player_list.get(uuid));
-                let name = profile
-                    .map(|player| player.name.clone())
-                    .unwrap_or_else(|| "Player".to_string());
+                let name: Cow<'static, str> = profile
+                    .map(|player| Cow::Owned(player.name.clone()))
+                    .unwrap_or(Cow::Borrowed(DEFAULT_PLAYER_NAME));
                 let skin_property = profile.and_then(|player| player.skin_property.clone());
                 entity.data = crate::entity::EntityData::Player {
-                    name,
+                    name: name.into_owned(),
                     gamemode: 0,
                     skin_property,
                 };
@@ -99,7 +110,7 @@ pub(super) fn handle_packet(
             dz,
             on_ground,
         } => {
-            if let Some(entity) = entities.get_mut(entity_id) {
+            if let Some(mut entity) = entities.get_mut(entity_id) {
                 entity.move_relative(dx, dy, dz, 3);
                 entity.on_ground = on_ground;
             }
@@ -110,7 +121,7 @@ pub(super) fn handle_packet(
             pitch,
             on_ground,
         } => {
-            if let Some(entity) = entities.get_mut(entity_id) {
+            if let Some(mut entity) = entities.get_mut(entity_id) {
                 entity.set_remote_rotation(yaw, pitch, 3);
                 entity.on_ground = on_ground;
             }
@@ -124,7 +135,7 @@ pub(super) fn handle_packet(
             pitch,
             on_ground,
         } => {
-            if let Some(entity) = entities.get_mut(entity_id) {
+            if let Some(mut entity) = entities.get_mut(entity_id) {
                 if entity.move_relative(dx, dy, dz, 3) {
                     entity.set_remote_rotation(yaw, pitch, 3);
                 }
@@ -140,7 +151,7 @@ pub(super) fn handle_packet(
             pitch,
             on_ground,
         } => {
-            if let Some(entity) = entities.get_mut(entity_id) {
+            if let Some(mut entity) = entities.get_mut(entity_id) {
                 if entity.teleport(nalgebra::Point3::new(x, y, z), 3) {
                     entity.set_remote_rotation(yaw, pitch, 3);
                 }
@@ -151,7 +162,7 @@ pub(super) fn handle_packet(
             entity_id,
             head_yaw,
         } => {
-            if let Some(entity) = entities.get_mut(entity_id) {
+            if let Some(mut entity) = entities.get_mut(entity_id) {
                 entity.head_yaw = head_yaw;
             }
         }
@@ -176,7 +187,7 @@ pub(super) fn handle_packet(
                     player.movement_sprinting(),
                 );
                 player.velocity = nalgebra::Vector3::new(vx, vy, vz);
-            } else if let Some(entity) = entities.get_mut(entity_id) {
+            } else if let Some(mut entity) = entities.get_mut(entity_id) {
                 entity.velocity = nalgebra::Vector3::new(vx as f32, vy as f32, vz as f32);
             }
         }
@@ -194,8 +205,9 @@ pub(super) fn handle_packet(
                 if session.entity_id == Some(entity_id) {
                     player.trigger_hurt();
                     let pitch = (rand_f32() - rand_f32()) * 0.2 + 1.0;
+                    let hurt_name: Cow<'static, str> = Cow::Borrowed(SOUND_PLAYER_HURT);
                     audio.play(crate::audio::SoundEvent {
-                        name: "game.player.hurt".to_string(),
+                        name: hurt_name.into_owned(),
                         category: crate::audio::SoundCategory::Players,
                         volume: 1.0,
                         pitch,
@@ -209,8 +221,9 @@ pub(super) fn handle_packet(
                 if let Some(entity) = entities.get(entity_id) {
                     let hurt_sound = entity_hurt_sound(entity.entity_type);
                     let pitch = (rand_f32() - rand_f32()) * 0.2 + 1.0;
+                    let hurt_name: Cow<'static, str> = Cow::Borrowed(hurt_sound);
                     audio.play(crate::audio::SoundEvent {
-                        name: hurt_sound.to_string(),
+                        name: hurt_name.into_owned(),
                         category: crate::audio::SoundCategory::Hostile,
                         volume: 1.0,
                         pitch,
@@ -225,7 +238,7 @@ pub(super) fn handle_packet(
             if status == 9 && session.entity_id == Some(entity_id) {
                 player.on_item_use_finished();
             }
-            if let Some(entity) = entities.get_mut(entity_id) {
+            if let Some(mut entity) = entities.get_mut(entity_id) {
                 entity.apply_status(status);
             }
         }
@@ -236,15 +249,15 @@ pub(super) fn handle_packet(
         } => {
             if !leash && session.entity_id == Some(entity_id) {
                 if let Some(previous_vehicle) = player.vehicle_id {
-                    if let Some(boat) = entities.get_mut(previous_vehicle) {
+                    if let Some(mut boat) = entities.get_mut(previous_vehicle) {
                         boat.set_boat_empty(true);
                     }
                 }
                 player.vehicle_id = (vehicle_id >= 0).then_some(vehicle_id);
-                if let Some(boat) = entities.get_mut(vehicle_id) {
+                if let Some(mut boat) = entities.get_mut(vehicle_id) {
                     boat.set_boat_empty(false);
                 }
-            } else if let Some(entity) = entities.get_mut(entity_id) {
+            } else if let Some(mut entity) = entities.get_mut(entity_id) {
                 entity.set_attachment(vehicle_id, leash);
             }
         }
@@ -252,7 +265,7 @@ pub(super) fn handle_packet(
             entity_id,
             metadata,
         } => {
-            if let Some(entity) = entities.get_mut(entity_id) {
+            if let Some(mut entity) = entities.get_mut(entity_id) {
                 entity.apply_metadata(metadata);
             }
         }
@@ -270,7 +283,7 @@ pub(super) fn handle_packet(
                     duration,
                     hide_particles,
                 });
-            } else if let Some(entity) = entities.get_mut(entity_id) {
+            } else if let Some(mut entity) = entities.get_mut(entity_id) {
                 entity.add_effect(EntityEffectState {
                     effect_id,
                     amplifier,
@@ -285,7 +298,7 @@ pub(super) fn handle_packet(
         } => {
             if session.entity_id == Some(entity_id) {
                 player.remove_effect(effect_id);
-            } else if let Some(entity) = entities.get_mut(entity_id) {
+            } else if let Some(mut entity) = entities.get_mut(entity_id) {
                 entity.remove_effect(effect_id);
             }
         }
@@ -295,7 +308,7 @@ pub(super) fn handle_packet(
         } => {
             if session.entity_id == Some(entity_id) {
                 player.apply_entity_properties(properties);
-            } else if let Some(entity) = entities.get_mut(entity_id) {
+            } else if let Some(mut entity) = entities.get_mut(entity_id) {
                 entity.apply_properties(properties);
             }
         }
@@ -311,7 +324,7 @@ pub(super) fn handle_packet(
 fn entity_hurt_sound(entity_type: crate::entity::EntityType) -> &'static str {
     use crate::entity::EntityType;
     match entity_type {
-        EntityType::Zombie | EntityType::PigZombie => "game.neutral.hurt",
+        EntityType::Zombie | EntityType::PigZombie => SOUND_NEUTRAL_HURT,
         EntityType::Skeleton
         | EntityType::Creeper
         | EntityType::Spider
@@ -330,7 +343,7 @@ fn entity_hurt_sound(entity_type: crate::entity::EntityType) -> &'static str {
         | EntityType::SnowMan
         | EntityType::EnderDragon
         | EntityType::Endermite
-        | EntityType::Giant => "game.neutral.hurt",
+        | EntityType::Giant => SOUND_NEUTRAL_HURT,
 
         EntityType::Villager
         | EntityType::Cow
@@ -342,11 +355,11 @@ fn entity_hurt_sound(entity_type: crate::entity::EntityType) -> &'static str {
         | EntityType::Ocelot
         | EntityType::Rabbit
         | EntityType::Squid
-        | EntityType::Mooshroom => "game.neutral.hurt",
+        | EntityType::Mooshroom => SOUND_NEUTRAL_HURT,
 
-        EntityType::Player => "game.player.hurt",
+        EntityType::Player => SOUND_PLAYER_HURT,
 
-        _ => "game.neutral.hurt",
+        _ => SOUND_NEUTRAL_HURT,
     }
 }
 

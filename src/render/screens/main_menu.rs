@@ -11,9 +11,9 @@ impl Renderer {
         widget_gui: &mut GuiVertexBuilder,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        let text = self.state.ui_text.clone();
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let text = self.state.settings.ui_text();
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
 
         let title_y = sh / 4.0 - 30.0 * gs;
@@ -41,7 +41,7 @@ impl Renderer {
         // currently implements multiplayer only, so expose it as disabled rather
         // than silently omitting the standard menu row.
         draw_button_enabled(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -52,7 +52,7 @@ impl Renderer {
         );
         let multiplayer_y = button_y + metrics.btn_h + metrics.btn_gap;
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -62,29 +62,29 @@ impl Renderer {
         );
         let alt_y = multiplayer_y + metrics.btn_h + metrics.btn_gap;
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
             btn::ALT_MANAGER,
             [metrics.btn_x, alt_y, metrics.btn_w, metrics.btn_h],
-            "Alt Manager",
+            text.get("rustcraft.mainmenu.altManager"),
         );
 
         let half_width = (metrics.btn_w - metrics.btn_gap) / 2.0;
         let modding_y = alt_y + metrics.btn_h + metrics.btn_gap;
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
             btn::MODDING,
             [metrics.btn_x, modding_y, metrics.btn_w, metrics.btn_h],
-            "Modding",
+            text.get("rustcraft.mainmenu.modding"),
         );
         let bottom_y = modding_y + metrics.btn_h + metrics.btn_gap;
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -93,7 +93,7 @@ impl Renderer {
             text.get("menu.options"),
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,

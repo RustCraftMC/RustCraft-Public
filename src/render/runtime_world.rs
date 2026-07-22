@@ -6,6 +6,13 @@ use super::DrawCmd;
 use crate::world::chunk::CHUNK_SIZE;
 use crate::world::mesh::ChunkMesh;
 
+// Compile-time guarantees for the typed slice view over the staging buffer.
+// `Vertex` is `Pod` (derived in `world::mesh::types`); these asserts ensure
+// the 4-byte aligned staging offsets stay compatible with `Vertex`'s layout
+// so `bytemuck::cast_slice_mut` produces a valid typed view.
+const _: () = assert!(std::mem::size_of::<crate::world::mesh::Vertex>() % 4 == 0);
+const _: () = assert!(std::mem::align_of::<crate::world::mesh::Vertex>() <= 4);
+
 impl super::Renderer {
     pub(super) fn prepare_chunk_uploads(&mut self, frame: usize) {
         if self.chunk_upload_bytes.is_empty() {
@@ -13,7 +20,7 @@ impl super::Renderer {
         }
         super::resources::upload_dynamic_buffer(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             &mut self.chunk_upload_buffers[frame],
             &mut self.chunk_upload_allocs[frame],
             &mut self.chunk_upload_capacities[frame],
@@ -78,78 +85,17 @@ impl super::Renderer {
         self.chunk_index_upload_copies.clear();
     }
 
-    pub fn recreate_swapchain(&mut self, window_size: (u32, u32)) {
-        if window_size.0 == 0 || window_size.1 == 0 {
-            return;
-        }
-        unsafe {
-            self.device.device_wait_idle().ok();
-        }
-        self.window_size = window_size;
-
-        unsafe {
-            for fb in &self.framebuffers {
-                self.device.destroy_framebuffer(*fb, None);
-            }
-            for view in self.depth_image_views.drain(..) {
-                self.device.destroy_image_view(view, None);
-            }
-            for image in self.depth_images.drain(..) {
-                self.device.destroy_image(image, None);
-            }
-            for allocation in self.depth_allocs.drain(..) {
-                self.allocator.free(allocation).ok();
-            }
-            for v in &self.swapchain_image_views {
-                self.device.destroy_image_view(*v, None);
-            }
-            self.swapchain_fn.destroy_swapchain(self.swapchain, None);
-        }
-
-        let (sc, images, views, format, extent) = Self::create_swapchain(
-            &self.surface_fn,
-            &self.swapchain_fn,
+    pub fn recreate_swapchain(&mut self) {
+        self.swapchain.recreate(
             &self.device,
+            self.resources.allocator_mut(),
             self._physical_device,
-            self.surface,
-            window_size,
-            vk::SwapchainKHR::null(),
-        );
-        self.swapchain = sc;
-        self._swapchain_images = images;
-        self.swapchain_image_views = views;
-        self._swapchain_format = format;
-        self.swapchain_extent = extent;
-
-        let (depth_images, depth_image_views, depth_allocs) = Self::create_depth_buffers(
-            &self.device,
-            &mut self.allocator,
-            self.depth_format,
-            extent,
-            self.swapchain_image_views.len(),
-        );
-        self.depth_images = depth_images;
-        self.depth_image_views = depth_image_views;
-        self.depth_allocs = depth_allocs;
-
-        self.framebuffers = Self::create_framebuffers(
-            &self.device,
             self.render_pass,
-            &self.swapchain_image_views,
-            &self.depth_image_views,
-            extent,
-        );
-        self.needs_recreate = false;
-        log::info!(
-            "swapchain recreated: extent={}x{}",
-            extent.width,
-            extent.height
         );
     }
 
     pub fn notify_resize(&mut self, width: u32, height: u32) {
-        self.window_size = (width, height);
-        self.needs_recreate = true;
+        self.swapchain.notify_resize(width, height);
     }
 
     pub(super) fn destroy_draw_cmd(&mut self, cmd: DrawCmd) {
@@ -173,8 +119,8 @@ impl super::Renderer {
                     self.device.destroy_buffer(vertex_buffer, None);
                     self.device.destroy_buffer(index_buffer, None);
                 }
-                self.allocator.free(vertex_alloc).ok();
-                self.allocator.free(index_alloc).ok();
+                self.resources.free(vertex_alloc);
+                self.resources.free(index_alloc);
             }
         }
     }
@@ -209,18 +155,9 @@ impl super::Renderer {
             self.draw_cmd_indices
                 .insert((mesh.cx, mesh.cz), self.draw_cmds.len() - 1);
         }
-        self.state.frame_chunk_upload_us = self
-            .state
-            .frame_chunk_upload_us
-            .saturating_add(started.elapsed().as_micros() as u64);
-        self.state.frame_chunk_upload_bytes = self
-            .state
-            .frame_chunk_upload_bytes
-            .saturating_add(uploaded_bytes);
-        self.state.frame_chunk_upload_count = self
-            .state
-            .frame_chunk_upload_count
-            .saturating_add(meshes.len() as u32);
+        self.state.frame_profile.set_frame_chunk_upload_us(self.state.frame_profile.frame_chunk_upload_us().saturating_add(started.elapsed().as_micros() as u64));
+        self.state.frame_profile.set_frame_chunk_upload_bytes(self.state.frame_profile.frame_chunk_upload_bytes().saturating_add(uploaded_bytes));
+        self.state.frame_profile.set_frame_chunk_upload_count(self.state.frame_profile.frame_chunk_upload_count().saturating_add(meshes.len() as u32));
     }
 
     pub fn upload_world(&mut self, meshes: &[ChunkMesh]) {
@@ -269,19 +206,21 @@ impl super::Renderer {
         };
 
         let storage = if let Some((first_vertex, first_index)) = shared_ranges {
-            let vertex_src_offset = (self.chunk_upload_bytes.len() + 3) & !3;
+            let vertex_align = std::mem::align_of::<crate::world::mesh::Vertex>();
+            let vertex_src_offset =
+                (self.chunk_upload_bytes.len() + vertex_align - 1) & !(vertex_align - 1);
             self.chunk_upload_bytes.resize(vertex_src_offset, 0);
-            let vertex_end = vertex_src_offset + vsize as usize;
-            self.chunk_upload_bytes.resize(vertex_end, 0);
-            unsafe {
-                let vertex_dst = self.chunk_upload_bytes.as_mut_ptr().add(vertex_src_offset)
-                    as *mut crate::world::mesh::Vertex;
-                for (index, vertex) in mesh.vertices.iter().enumerate() {
-                    let mut world_vertex = *vertex;
-                    world_vertex.pos[0] += ox;
-                    world_vertex.pos[2] += oz;
-                    std::ptr::write_unaligned(vertex_dst.add(index), world_vertex);
-                }
+            self.chunk_upload_bytes
+                .extend_from_slice(bytemuck::cast_slice(&mesh.vertices));
+            // Apply the chunk's world-space offset in place through a typed
+            // view over the staging bytes. Safe because `Vertex` is `Pod` and
+            // the slice was just filled with exactly `mesh.vertices.len()`
+            // vertices by `extend_from_slice` above.
+            let vertex_dst: &mut [crate::world::mesh::Vertex] =
+                bytemuck::cast_slice_mut(&mut self.chunk_upload_bytes[vertex_src_offset..]);
+            for world_vertex in vertex_dst.iter_mut() {
+                world_vertex.pos[0] += ox;
+                world_vertex.pos[2] += oz;
             }
             self.chunk_vertex_upload_copies.push(vk::BufferCopy {
                 src_offset: vertex_src_offset as u64,
@@ -290,7 +229,9 @@ impl super::Renderer {
                 size: vsize,
             });
 
-            let index_src_offset = (self.chunk_upload_bytes.len() + 3) & !3;
+            let index_align = std::mem::align_of::<u32>();
+            let index_src_offset =
+                (self.chunk_upload_bytes.len() + index_align - 1) & !(index_align - 1);
             self.chunk_upload_bytes.resize(index_src_offset, 0);
             self.chunk_upload_bytes
                 .extend_from_slice(bytemuck::cast_slice(&mesh.indices));

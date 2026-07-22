@@ -105,10 +105,30 @@ pub const UI_TEXT_KEYS: &[&str] = &[
     "selectServer.empty",
     "selectServer.select",
     "selectServer.direct",
+    "selectServer.add",
+    "selectServer.edit",
     "selectServer.delete",
     "selectServer.refresh",
+    "addServer.title",
+    "addServer.enterName",
     "addServer.enterIp",
     "addServer.add",
+    "gui.back",
+    "menu.returnToMenu",
+    "options.sensitivity",
+    "options.invertMouse.on",
+    "options.invertMouse.off",
+    "controls.reset",
+    "rustcraft.controls.controller",
+    "rustcraft.controls.keyboardMouse",
+    "rustcraft.controls.lookSensitivity",
+    "rustcraft.controls.cursorSpeed",
+    "rustcraft.modding.configTitle",
+    "rustcraft.modding.configSubtitle",
+    "rustcraft.modding.configEmpty",
+    "rustcraft.modding.configLocked",
+    "rustcraft.modding.configHints",
+    "rustcraft.modding.resetAll",
     "deathScreen.title",
     "deathScreen.score",
     "deathScreen.respawn",
@@ -186,6 +206,8 @@ pub const UI_TEXT_KEYS: &[&str] = &[
     "rustcraft.altmanager.enterUsername",
     "rustcraft.altmanager.usernameHint",
     "rustcraft.altmanager.confirmHint",
+    "rustcraft.mainmenu.altManager",
+    "rustcraft.mainmenu.modding",
     "rustcraft.modding.inspectPrompt",
     "rustcraft.modding.permissions",
     "rustcraft.modding.running",
@@ -221,7 +243,11 @@ impl UiText {
     }
 
     pub fn get(&self, key: &'static str) -> &str {
-        self.values.get(key).map(String::as_str).unwrap_or(key)
+        self.values
+            .get(key)
+            .or_else(|| self.dynamic_values.get(key))
+            .map(String::as_str)
+            .unwrap_or(key)
     }
 
     pub fn dynamic(&self, key: &str) -> String {

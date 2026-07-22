@@ -6,7 +6,16 @@ use crate::entity::EntityManager;
 use crate::net;
 use crate::world;
 use crate::{audio::AudioBackend, world::network::ChunkDataOptions};
+use smallvec::SmallVec;
 use std::collections::VecDeque;
+
+/// Inline capacity for the per-frame mesh list. A typical poll produces a
+/// handful of chunk meshes, so this keeps small updates on the stack.
+pub type MeshList = SmallVec<[world::mesh::ChunkMesh; 2]>;
+/// Inline capacity for sign-text updates collected while scanning packets.
+/// Each sign packet contributes at most one entry, and most packets produce
+/// none, so a single inline slot covers the common case without heap traffic.
+pub type SignUpdateList = SmallVec<[(i32, i32, i32, [String; 4]); 1]>;
 
 mod effects;
 mod entity;
@@ -20,7 +29,9 @@ mod world_packets;
 const INBOUND_SCAN_BUDGET: usize = 64;
 /// Chunk columns are the dominant main-thread packet cost. Count every column
 /// inside MapChunkBulk as work instead of treating a whole bulk as one packet.
-const WORLD_WORK_BUDGET: usize = 4;
+// Columns applied per frame from the deferred world queue. Too low and the
+// player steps into unloaded columns (movement hold) long before meshes appear.
+const WORLD_WORK_BUDGET: usize = 12;
 const MULTI_BLOCK_RECORD_BUDGET: usize = 256;
 /// A plugin can request thousands of particles per packet. Bound the total
 /// construction work across all particle packets handled in one render frame.
@@ -55,7 +66,7 @@ pub struct NetworkDebugProfile {
 
 #[derive(Default)]
 pub struct NetworkPollResult {
-    pub meshes: Vec<world::mesh::ChunkMesh>,
+    pub meshes: MeshList,
     pub debug: NetworkDebugProfile,
 }
 
@@ -72,7 +83,7 @@ pub fn poll_network(
     audio: &mut impl AudioBackend,
     i18n: Option<&crate::ui::i18n::I18n>,
 ) -> NetworkPollResult {
-    let mut meshes = Vec::new();
+    let mut meshes = MeshList::new();
     let mut debug = NetworkDebugProfile::default();
     let Some(connection) = connection else {
         return NetworkPollResult { meshes, debug };
@@ -159,7 +170,7 @@ pub fn poll_network(
         // Attribute downstream work to the packet that is actually handled.
         let (packet_kind, packet_units) = packet_debug_info(&packet);
         let mut packet = Some(packet);
-        let mut sign_updates = Vec::new();
+        let mut sign_updates = SignUpdateList::new();
 
         let session_started = std::time::Instant::now();
         if let Some(unhandled) = session::handle_packet(

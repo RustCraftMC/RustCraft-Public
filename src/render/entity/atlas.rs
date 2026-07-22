@@ -213,17 +213,18 @@ impl EntityTextureAtlas {
                     tex_height: 2,
                 },
             );
+            cursor_x += 2 + pad;
+            row_h = row_h.max(2 + pad);
         }
 
         // Cape slot — 64×32, shared by all players with the same cape.
         // Pixels are uploaded by `upload_cape` when the local player's
-        // cape changes at runtime.
+        // cape changes at runtime. cursor_x already advanced past __white.
         {
-            let pad = 1u32;
-            if cursor_x + 64 + pad > ENTITY_ATLAS_SIZE {
+            const CAPE_PAD: u32 = 1;
+            if cursor_x + 64 + CAPE_PAD > ENTITY_ATLAS_SIZE {
                 cursor_x = 0;
                 cursor_y += row_h;
-                // row_h = 0;
             }
             regions.insert(
                 "player/cape".into(),
@@ -236,8 +237,6 @@ impl EntityTextureAtlas {
                     tex_height: 32,
                 },
             );
-            // cursor_x += 64 + pad;
-            // row_h = row_h.max(32 + pad);
         }
 
         log::info!(
@@ -322,7 +321,11 @@ impl EntityTextureAtlas {
             let Some(cape_pixels) = pending.cape_pixels.as_deref() else {
                 continue;
             };
-            let Some((x, y)) = self.find_free_region_in_band(64, 32, 0, SIGN_BAND_Y_START) else {
+            // Capes pack only in the sign band (below player skins), never in
+            // the static mob shelf (0..SIGN_BAND_Y_START).
+            let Some((x, y)) =
+                self.find_free_region_in_band(64, 32, SIGN_BAND_Y_START, PLAYER_SKIN_ATLAS_Y)
+            else {
                 log::warn!(
                     "entity texture atlas has no room for cape '{}'; skipping",
                     pending.key
@@ -408,24 +411,15 @@ impl EntityTextureAtlas {
                 (region.v_min * ENTITY_ATLAS_SIZE as f32).round() as u32,
             )
         } else {
-            // Pack signs in a dedicated band so nametags never crowd them out.
-            // If the band is full (e.g. 45+ signs in view), fall back to the
-            // full runtime area — at that point failing a sign is worse than
-            // potentially displacing a nametag later in the frame.
+            // Pack signs only in the dedicated band. Never fall back into
+            // 0..SIGN_BAND_Y_START — that region holds shelf-packed mob skins,
+            // and overwriting them scrambles every entity texture.
             self.find_free_region_in_band(
                 SIGN_TEXT_CELL_W,
                 SIGN_TEXT_CELL_H,
                 SIGN_BAND_Y_START,
                 PLAYER_SKIN_ATLAS_Y,
-            )
-            .or_else(|| {
-                self.find_free_region_in_band(
-                    SIGN_TEXT_CELL_W,
-                    SIGN_TEXT_CELL_H,
-                    0,
-                    SIGN_BAND_Y_START,
-                )
-            })?
+            )?
         };
         for row in y..y + SIGN_TEXT_CELL_H {
             let start = ((row * ENTITY_ATLAS_SIZE + x) * 4) as usize;

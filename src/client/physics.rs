@@ -4,6 +4,12 @@
 
 use crate::world::{block::Block, World};
 use nalgebra::{Point3, Vector3};
+use smallvec::{SmallVec, smallvec};
+
+/// Inline capacity for collision-box collections. Most blocks produce at most
+/// six collision boxes (e.g. Hopper/Cauldron), so this keeps the per-query
+/// allocation off the heap in the common case.
+type CollisionBoxes = SmallVec<[Aabb; 6]>;
 
 /// Player physics constants (MC 1.8.9 values)
 // Entity width/height/eye height are Java floats. Entity/AABB math promotes
@@ -12,6 +18,20 @@ use nalgebra::{Point3, Vector3};
 pub const PLAYER_WIDTH: f64 = 0.6_f32 as f64;
 pub const PLAYER_HEIGHT: f64 = 1.8_f32 as f64;
 pub const PLAYER_EYE_HEIGHT: f64 = 1.62_f32 as f64;
+
+/// One Minecraft block spans this many texture/model pixels.
+pub const PIXELS_PER_BLOCK: f64 = 16.0;
+/// Same as [`PIXELS_PER_BLOCK`] but as `f32` for raycast math.
+const PIXELS_PER_BLOCK_F32: f32 = 16.0;
+
+/// Sneak edge-prevention step size (MC 1.8.9 Entity.moveEntity).
+const SNEAK_EDGE_STEP: f64 = 0.05;
+
+/// Maximum height a living entity can step up without jumping.
+const STEP_HEIGHT: f64 = 0.6_f32 as f64;
+
+/// Particle collision-box dimensions (width == height).
+const PARTICLE_SIZE: f64 = 0.2_f32 as f64;
 
 /// AABB for collision testing.
 #[derive(Clone, Copy, Debug)]
@@ -166,12 +186,12 @@ fn block_aabb(bx: i32, by: i32, bz: i32) -> Aabb {
 
 fn element_aabb(bx: i32, by: i32, bz: i32, from: [f32; 3], to: [f32; 3]) -> Aabb {
     Aabb {
-        min_x: bx as f64 + from[0] as f64 / 16.0,
-        min_y: by as f64 + from[1] as f64 / 16.0,
-        min_z: bz as f64 + from[2] as f64 / 16.0,
-        max_x: bx as f64 + to[0] as f64 / 16.0,
-        max_y: by as f64 + to[1] as f64 / 16.0,
-        max_z: bz as f64 + to[2] as f64 / 16.0,
+        min_x: bx as f64 + from[0] as f64 / PIXELS_PER_BLOCK,
+        min_y: by as f64 + from[1] as f64 / PIXELS_PER_BLOCK,
+        min_z: bz as f64 + from[2] as f64 / PIXELS_PER_BLOCK,
+        max_x: bx as f64 + to[0] as f64 / PIXELS_PER_BLOCK,
+        max_y: by as f64 + to[1] as f64 / PIXELS_PER_BLOCK,
+        max_z: bz as f64 + to[2] as f64 / PIXELS_PER_BLOCK,
     }
 }
 
@@ -216,7 +236,7 @@ fn fence_connects(fence: Block, neighbor: Block) -> bool {
         || is_vanilla_full_cube_neighbor(neighbor)
 }
 
-fn fence_collision_boxes(world: &World, block: Block, bx: i32, by: i32, bz: i32) -> Vec<Aabb> {
+fn fence_collision_boxes(world: &World, block: Block, bx: i32, by: i32, bz: i32) -> CollisionBoxes {
     let north = fence_connects(block, world.get_block(bx, by, bz - 1));
     let south = fence_connects(block, world.get_block(bx, by, bz + 1));
     let west = fence_connects(block, world.get_block(bx - 1, by, bz));
@@ -232,8 +252,8 @@ fn fence_boxes_for_connections(
     south: bool,
     west: bool,
     east: bool,
-) -> Vec<Aabb> {
-    let mut boxes = Vec::with_capacity(2);
+) -> CollisionBoxes {
+    let mut boxes = SmallVec::new();
 
     if north || south {
         boxes.push(element_aabb(
@@ -294,7 +314,7 @@ fn wall_box_for_connections(
     element_aabb(bx, by, bz, [min_x, 0.0, min_z], [max_x, 24.0, max_z])
 }
 
-fn block_collision_boxes(world: &World, bx: i32, by: i32, bz: i32) -> Vec<Aabb> {
+fn block_collision_boxes(world: &World, bx: i32, by: i32, bz: i32) -> CollisionBoxes {
     block_collision_boxes_for_state(world, bx, by, bz, world.get_block_state(bx, by, bz))
 }
 
@@ -326,21 +346,21 @@ fn block_collision_boxes_for_state(
     by: i32,
     bz: i32,
     block_state: u16,
-) -> Vec<Aabb> {
+) -> CollisionBoxes {
     let block = Block::from_state(block_state);
     if block == Block::Air || block.is_liquid() {
-        return Vec::new();
+        return SmallVec::new();
     }
 
     // Decorative/plant blocks have no collision (walk through them)
     if is_non_collidable(block) {
-        return Vec::new();
+        return SmallVec::new();
     }
 
     // These bounds are collision-specific in vanilla and differ from (or are
     // absent from) the render model used by block_elements.
     if block == Block::LilyPad {
-        return vec![element_aabb(
+        return smallvec![element_aabb(
             bx,
             by,
             bz,
@@ -349,21 +369,21 @@ fn block_collision_boxes_for_state(
         )];
     }
     if block == Block::FlowerPot {
-        return vec![element_aabb(bx, by, bz, [5.0, 0.0, 5.0], [11.0, 6.0, 11.0])];
+        return smallvec![element_aabb(bx, by, bz, [5.0, 0.0, 5.0], [11.0, 6.0, 11.0])];
     }
     let metadata = (block_state & 0x0f) as u8;
     match block {
         Block::Chest | Block::TrappedChest | Block::EnderChest => {
             let (from, to) = chest_bounds(world, block, bx, by, bz);
-            return vec![element_aabb(bx, by, bz, from, to)];
+            return smallvec![element_aabb(bx, by, bz, from, to)];
         }
         Block::SnowLayer => {
             // BlockSnow collision is one layer shorter than its selection and
             // render bounds. A single layer therefore has no collision.
             if metadata & 7 == 0 {
-                return Vec::new();
+                return SmallVec::new();
             }
-            return vec![element_aabb(
+            return smallvec![element_aabb(
                 bx,
                 by,
                 bz,
@@ -372,7 +392,7 @@ fn block_collision_boxes_for_state(
             )];
         }
         Block::Cactus => {
-            return vec![element_aabb(
+            return smallvec![element_aabb(
                 bx,
                 by,
                 bz,
@@ -381,7 +401,7 @@ fn block_collision_boxes_for_state(
             )];
         }
         Block::SoulSand => {
-            return vec![element_aabb(
+            return smallvec![element_aabb(
                 bx,
                 by,
                 bz,
@@ -389,13 +409,13 @@ fn block_collision_boxes_for_state(
                 [16.0, 14.0, 16.0],
             )];
         }
-        Block::Farmland | Block::MobSpawner => return vec![block_aabb(bx, by, bz)],
+        Block::Farmland | Block::MobSpawner => return smallvec![block_aabb(bx, by, bz)],
         Block::Bed => {
-            return vec![element_aabb(bx, by, bz, [0.0, 0.0, 0.0], [16.0, 9.0, 16.0])];
+            return smallvec![element_aabb(bx, by, bz, [0.0, 0.0, 0.0], [16.0, 9.0, 16.0])];
         }
         Block::Cake => {
             let min_x = 1.0 + (metadata & 7) as f32 * 2.0;
-            return vec![element_aabb(
+            return smallvec![element_aabb(
                 bx,
                 by,
                 bz,
@@ -404,13 +424,13 @@ fn block_collision_boxes_for_state(
             )];
         }
         Block::BrewingStand => {
-            return vec![
+            return smallvec![
                 element_aabb(bx, by, bz, [7.0, 0.0, 7.0], [9.0, 14.0, 9.0]),
                 element_aabb(bx, by, bz, [0.0, 0.0, 0.0], [16.0, 2.0, 16.0]),
             ];
         }
         Block::Cauldron => {
-            return vec![
+            return smallvec![
                 element_aabb(bx, by, bz, [0.0, 0.0, 0.0], [16.0, 5.0, 16.0]),
                 element_aabb(bx, by, bz, [0.0, 0.0, 0.0], [2.0, 16.0, 16.0]),
                 element_aabb(bx, by, bz, [0.0, 0.0, 0.0], [16.0, 16.0, 2.0]),
@@ -419,7 +439,7 @@ fn block_collision_boxes_for_state(
             ];
         }
         Block::Hopper => {
-            return vec![
+            return smallvec![
                 element_aabb(bx, by, bz, [0.0, 0.0, 0.0], [16.0, 10.0, 16.0]),
                 element_aabb(bx, by, bz, [0.0, 0.0, 0.0], [2.0, 16.0, 16.0]),
                 element_aabb(bx, by, bz, [0.0, 0.0, 0.0], [16.0, 16.0, 2.0]),
@@ -428,7 +448,7 @@ fn block_collision_boxes_for_state(
             ];
         }
         Block::EndPortalFrame => {
-            let mut boxes = vec![element_aabb(
+            let mut boxes = smallvec![element_aabb(
                 bx,
                 by,
                 bz,
@@ -448,7 +468,7 @@ fn block_collision_boxes_for_state(
         }
         Block::Anvil => {
             return if metadata & 1 == 0 {
-                vec![element_aabb(
+                smallvec![element_aabb(
                     bx,
                     by,
                     bz,
@@ -456,7 +476,7 @@ fn block_collision_boxes_for_state(
                     [14.0, 16.0, 16.0],
                 )]
             } else {
-                vec![element_aabb(
+                smallvec![element_aabb(
                     bx,
                     by,
                     bz,
@@ -471,14 +491,14 @@ fn block_collision_boxes_for_state(
         return fence_collision_boxes(world, block, bx, by, bz);
     }
     if block == Block::CobblestoneWall {
-        return vec![wall_collision_box(world, bx, by, bz)];
+        return smallvec![wall_collision_box(world, bx, by, bz)];
     }
     if is_fence_gate(block) {
         if metadata & 4 != 0 {
-            return Vec::new();
+            return SmallVec::new();
         }
         return if metadata & 1 == 0 {
-            vec![element_aabb(
+            smallvec![element_aabb(
                 bx,
                 by,
                 bz,
@@ -486,7 +506,7 @@ fn block_collision_boxes_for_state(
                 [16.0, 24.0, 10.0],
             )]
         } else {
-            vec![element_aabb(
+            smallvec![element_aabb(
                 bx,
                 by,
                 bz,
@@ -510,7 +530,7 @@ fn block_collision_boxes_for_state(
             .map(|elem| element_aabb(bx, by, bz, elem.from, elem.to))
             .collect()
     } else {
-        vec![block_aabb(bx, by, bz)]
+        smallvec![block_aabb(bx, by, bz)]
     }
 }
 
@@ -558,14 +578,14 @@ fn is_non_collidable(block: Block) -> bool {
     )
 }
 
-pub fn get_colliding_boxes(aabb: &Aabb, world: &World) -> Vec<Aabb> {
+pub fn get_colliding_boxes(aabb: &Aabb, world: &World) -> CollisionBoxes {
     let min_bx = aabb.min_x.floor() as i32;
     let min_by = aabb.min_y.floor() as i32 - 1;
     let min_bz = aabb.min_z.floor() as i32;
     let max_bx = aabb.max_x.floor() as i32;
     let max_by = aabb.max_y.floor() as i32;
     let max_bz = aabb.max_z.floor() as i32;
-    let mut boxes = Vec::new();
+    let mut boxes = SmallVec::new();
 
     // World.getCollidingBoundingBoxes iterates X -> Y -> Z. Keep the same
     // insertion order because moveEntity clips against this list in order.
@@ -584,7 +604,7 @@ pub fn get_colliding_boxes(aabb: &Aabb, world: &World) -> Vec<Aabb> {
     boxes
 }
 
-fn get_movement_collisions(aabb: &Aabb, world: &World, entity_boxes: &[Aabb]) -> Vec<Aabb> {
+fn get_movement_collisions(aabb: &Aabb, world: &World, entity_boxes: &[Aabb]) -> CollisionBoxes {
     let mut boxes = get_colliding_boxes(aabb, world);
     boxes.extend(
         entity_boxes
@@ -611,7 +631,7 @@ pub fn move_particle_with_collision(
     let mut x = original.x;
     let mut y = original.y;
     let mut z = original.z;
-    let mut bb = Aabb::new(&pos.cast::<f64>(), 0.2_f32 as f64, 0.2_f32 as f64);
+    let mut bb = Aabb::new(&pos.cast::<f64>(), PARTICLE_SIZE, PARTICLE_SIZE);
     let colliding = get_colliding_boxes(&bb.add_coord(x, y, z), world);
 
     for block_box in &colliding {
@@ -684,7 +704,7 @@ pub fn move_with_collision(
     // supporting block below the destination — this keeps the player from
     // walking off block edges while sneaking.
     if *on_ground && sneaking {
-        let step = 0.05f64;
+        let step = SNEAK_EDGE_STEP;
 
         // Check X axis
         while x != 0.0
@@ -762,7 +782,7 @@ pub fn move_with_collision(
 
     // --- Step-up (MC 1.8.9 Entity.moveEntity lines 721-813) ---
     // stepHeight: for players = 0.6 (EntityLivingBase.stepHeight)
-    let step_height = 0.6_f32 as f64;
+    let step_height = STEP_HEIGHT;
     // flag1: "was on ground OR will land this tick"
     let flag1 = *on_ground || (d4 != y && d4 < 0.0);
     if step_height > 0.0 && flag1 && (d3 != x || d5 != z) {
@@ -1225,14 +1245,14 @@ pub fn raycast(
                     *origin,
                     dir,
                     [
-                        x as f32 + local_min[0] / 16.0,
-                        y as f32 + local_min[1] / 16.0,
-                        z as f32 + local_min[2] / 16.0,
+                        x as f32 + local_min[0] / PIXELS_PER_BLOCK_F32,
+                        y as f32 + local_min[1] / PIXELS_PER_BLOCK_F32,
+                        z as f32 + local_min[2] / PIXELS_PER_BLOCK_F32,
                     ],
                     [
-                        x as f32 + local_max[0] / 16.0,
-                        y as f32 + local_max[1] / 16.0,
-                        z as f32 + local_max[2] / 16.0,
+                        x as f32 + local_max[0] / PIXELS_PER_BLOCK_F32,
+                        y as f32 + local_max[1] / PIXELS_PER_BLOCK_F32,
+                        z as f32 + local_max[2] / PIXELS_PER_BLOCK_F32,
                     ],
                 );
             } else if let Some((local_min, local_max)) = vanilla_raycast_bounds(block) {
@@ -1263,14 +1283,14 @@ pub fn raycast(
                 if let Some(elements) = elements {
                     for element in elements {
                         let min = [
-                            x as f32 + element.from[0] / 16.0,
-                            y as f32 + element.from[1] / 16.0,
-                            z as f32 + element.from[2] / 16.0,
+                            x as f32 + element.from[0] / PIXELS_PER_BLOCK_F32,
+                            y as f32 + element.from[1] / PIXELS_PER_BLOCK_F32,
+                            z as f32 + element.from[2] / PIXELS_PER_BLOCK_F32,
                         ];
                         let max = [
-                            x as f32 + element.to[0] / 16.0,
-                            y as f32 + element.to[1] / 16.0,
-                            z as f32 + element.to[2] / 16.0,
+                            x as f32 + element.to[0] / PIXELS_PER_BLOCK_F32,
+                            y as f32 + element.to[1] / PIXELS_PER_BLOCK_F32,
+                            z as f32 + element.to[2] / PIXELS_PER_BLOCK_F32,
                         ];
                         if let Some((distance, face)) = ray_aabb_hit(*origin, dir, min, max) {
                             if distance <= max_dist

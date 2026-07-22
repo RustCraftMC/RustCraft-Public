@@ -1,5 +1,5 @@
 use super::scroll_list::GuiScrollList;
-use super::{draw_button, draw_button_enabled, draw_slider, draw_title};
+use super::{draw_button, draw_button_enabled, draw_slider};
 use crate::render::gui::widgets::MenuMetrics;
 use crate::render::gui::GuiVertexBuilder;
 use crate::render::{ControlBindingRow, Renderer};
@@ -19,100 +19,17 @@ impl Renderer {
         font_gui: &mut GuiVertexBuilder,
     ) {
         let _ = background_gui;
-        let text = self.state.ui_text.clone();
         let sw = metrics.sw;
         let sh = metrics.sh;
         let gs = metrics.gs;
 
-        draw_title(
-            self,
-            font_gui,
-            sw / 2.0,
-            8.0 * gs,
-            text.get("controls.title"),
-            12.0 * gs,
-            gs,
-        );
-        let device_label = if self.state.controls_gamepad {
-            text.get("rustcraft.controls.controller")
-        } else {
-            text.get("rustcraft.controls.keyboardMouse")
-        };
-        draw_button(
-            self,
-            metrics,
-            widget_gui,
-            font_gui,
-            btn::CONTROL_DEVICE_TOGGLE,
-            [sw / 2.0 - 75.0 * gs, 23.0 * gs, 150.0 * gs, 18.0 * gs],
-            device_label,
-        );
-
-        // Vanilla exposes mouse sensitivity in the Options screen.  Keep the
-        // setting alongside bindings here, and show controller-specific
-        // equivalents when the controller binding page is active.
-        if self.state.controls_gamepad {
-            draw_slider(
-                self,
-                metrics,
-                widget_gui,
-                font_gui,
-                btn::GAMEPAD_LOOK_SENSITIVITY,
-                [sw / 2.0 - 155.0 * gs, 45.0 * gs, 150.0 * gs, 18.0 * gs],
-                &format!(
-                    "{}: {}%",
-                    text.get("rustcraft.controls.lookSensitivity"),
-                    (self.state.gamepad_look_sensitivity * 200.0).round()
-                ),
-                self.state.gamepad_look_sensitivity,
-            );
-            draw_slider(
-                self,
-                metrics,
-                widget_gui,
-                font_gui,
-                btn::GAMEPAD_CURSOR_SPEED,
-                [sw / 2.0 + 5.0 * gs, 45.0 * gs, 150.0 * gs, 18.0 * gs],
-                &format!(
-                    "{}: {}%",
-                    text.get("rustcraft.controls.cursorSpeed"),
-                    (self.state.gamepad_cursor_speed * 200.0).round()
-                ),
-                self.state.gamepad_cursor_speed,
-            );
-        } else {
-            draw_slider(
-                self,
-                metrics,
-                widget_gui,
-                font_gui,
-                btn::MOUSE_SENSITIVITY,
-                [sw / 2.0 - 155.0 * gs, 45.0 * gs, 150.0 * gs, 18.0 * gs],
-                &format!(
-                    "{}: {}%",
-                    text.get("options.sensitivity"),
-                    (self.state.mouse_sensitivity * 200.0).round()
-                ),
-                self.state.mouse_sensitivity,
-            );
-            draw_button(
-                self,
-                metrics,
-                widget_gui,
-                font_gui,
-                btn::INVERT_MOUSE_TOGGLE,
-                [sw / 2.0 + 5.0 * gs, 45.0 * gs, 150.0 * gs, 18.0 * gs],
-                if self.state.invert_mouse {
-                    text.get("options.invertMouse.on")
-                } else {
-                    text.get("options.invertMouse.off")
-                },
-            );
-        }
-
+        // Build the control list and sync scroll state before borrowing
+        // `ui_text` so the mutable `set_controls_list_scroll` call does not
+        // conflict with the immutable text borrow held for the rest of the
+        // frame.
         let mut items = Vec::new();
         let mut category = String::new();
-        for row in self.state.control_bindings.iter().cloned() {
+        for row in self.state.settings.control_bindings().iter().cloned() {
             if row.category != category {
                 category = row.category.clone();
                 items.push(ControlListItem::Category(category.clone()));
@@ -127,9 +44,89 @@ impl Renderer {
             (sh - 80.0 * gs).max(20.0 * gs),
             20.0 * gs,
             items.len(),
-            self.state.controls_list_scroll,
+            self.state.settings.controls_list_scroll(),
         );
-        self.state.controls_list_scroll = list.first_row;
+        self.state.settings.set_controls_list_scroll(list.first_row);
+
+        self.draw_standard_screen(metrics, font_gui, "controls.title", 8.0 * gs, 12.0 * gs);
+        let text = self.state.settings.ui_text();
+        let device_label = if self.state.settings.controls_gamepad() {
+            text.get("rustcraft.controls.controller")
+        } else {
+            text.get("rustcraft.controls.keyboardMouse")
+        };
+        draw_button(
+            &mut self.font,
+            metrics,
+            widget_gui,
+            font_gui,
+            btn::CONTROL_DEVICE_TOGGLE,
+            [sw / 2.0 - 75.0 * gs, 23.0 * gs, 150.0 * gs, 18.0 * gs],
+            device_label,
+        );
+
+        // Vanilla exposes mouse sensitivity in the Options screen.  Keep the
+        // setting alongside bindings here, and show controller-specific
+        // equivalents when the controller binding page is active.
+        if self.state.settings.controls_gamepad() {
+            draw_slider(
+                &mut self.font,
+                metrics,
+                widget_gui,
+                font_gui,
+                btn::GAMEPAD_LOOK_SENSITIVITY,
+                [sw / 2.0 - 155.0 * gs, 45.0 * gs, 150.0 * gs, 18.0 * gs],
+                &format!(
+                    "{}: {}%",
+                    text.get("rustcraft.controls.lookSensitivity"),
+                    (self.state.settings.gamepad_look_sensitivity() * 200.0).round()
+                ),
+                self.state.settings.gamepad_look_sensitivity(),
+            );
+            draw_slider(
+                &mut self.font,
+                metrics,
+                widget_gui,
+                font_gui,
+                btn::GAMEPAD_CURSOR_SPEED,
+                [sw / 2.0 + 5.0 * gs, 45.0 * gs, 150.0 * gs, 18.0 * gs],
+                &format!(
+                    "{}: {}%",
+                    text.get("rustcraft.controls.cursorSpeed"),
+                    (self.state.settings.gamepad_cursor_speed() * 200.0).round()
+                ),
+                self.state.settings.gamepad_cursor_speed(),
+            );
+        } else {
+            draw_slider(
+                &mut self.font,
+                metrics,
+                widget_gui,
+                font_gui,
+                btn::MOUSE_SENSITIVITY,
+                [sw / 2.0 - 155.0 * gs, 45.0 * gs, 150.0 * gs, 18.0 * gs],
+                &format!(
+                    "{}: {}%",
+                    text.get("options.sensitivity"),
+                    (self.state.settings.mouse_sensitivity() * 200.0).round()
+                ),
+                self.state.settings.mouse_sensitivity(),
+            );
+            draw_button(
+                &mut self.font,
+                metrics,
+                widget_gui,
+                font_gui,
+                btn::INVERT_MOUSE_TOGGLE,
+                [sw / 2.0 + 5.0 * gs, 45.0 * gs, 150.0 * gs, 18.0 * gs],
+                if self.state.settings.invert_mouse() {
+                    text.get("options.invertMouse.on")
+                } else {
+                    text.get("options.invertMouse.off")
+                },
+            );
+        }
+
         list.draw_background(font_gui);
 
         let binding_x = sw / 2.0 - 25.0 * gs;
@@ -173,7 +170,7 @@ impl Renderer {
                         row.binding.clone()
                     };
                     draw_button(
-                        self,
+                        &mut self.font,
                         metrics,
                         widget_gui,
                         font_gui,
@@ -191,7 +188,7 @@ impl Renderer {
                         );
                     }
                     draw_button_enabled(
-                        self,
+                        &mut self.font,
                         metrics,
                         widget_gui,
                         font_gui,
@@ -209,7 +206,7 @@ impl Renderer {
 
         let bottom_y = sh - 29.0 * gs;
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -218,7 +215,7 @@ impl Renderer {
             text.get("gui.done"),
         );
         draw_button_enabled(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -226,7 +223,8 @@ impl Renderer {
             [sw / 2.0 + 5.0 * gs, bottom_y, 150.0 * gs, metrics.btn_h],
             text.get("controls.resetAll"),
             self.state
-                .control_bindings
+                .settings
+                .control_bindings()
                 .iter()
                 .any(|row| !row.is_default),
         );

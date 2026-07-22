@@ -30,32 +30,44 @@ pub(super) fn upload_dynamic_buffer(
         }
 
         let new_capacity = size.next_power_of_two().max(256);
-        let buf = unsafe {
-            device
-                .create_buffer(
-                    &vk::BufferCreateInfo {
-                        size: new_capacity,
-                        usage,
-                        ..Default::default()
-                    },
-                    None,
-                )
-                .unwrap()
+        let buf = match unsafe {
+            device.create_buffer(
+                &vk::BufferCreateInfo {
+                    size: new_capacity,
+                    usage,
+                    ..Default::default()
+                },
+                None,
+            )
+        } {
+            Ok(buf) => buf,
+            Err(e) => {
+                log::error!("upload_dynamic_buffer: create_buffer failed: {e:?}");
+                return;
+            }
         };
         let reqs = unsafe { device.get_buffer_memory_requirements(buf) };
-        let alloc = allocator
-            .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-                name: "dynamic_mesh_buf",
-                requirements: reqs,
-                location: gpu_allocator::MemoryLocation::CpuToGpu,
-                linear: true,
-                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-            })
-            .unwrap();
-        unsafe {
-            device
-                .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
-                .unwrap();
+        let alloc = match allocator.allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+            name: "dynamic_mesh_buf",
+            requirements: reqs,
+            location: gpu_allocator::MemoryLocation::CpuToGpu,
+            linear: true,
+            allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+        }) {
+            Ok(alloc) => alloc,
+            Err(e) => {
+                log::error!("upload_dynamic_buffer: allocate failed: {e:?}");
+                unsafe { device.destroy_buffer(buf, None); }
+                return;
+            }
+        };
+        if let Err(e) = unsafe {
+            device.bind_buffer_memory(buf, alloc.memory(), alloc.offset())
+        } {
+            log::error!("upload_dynamic_buffer: bind_buffer_memory failed: {e:?}");
+            unsafe { device.destroy_buffer(buf, None); }
+            let _ = allocator.free(alloc);
+            return;
         }
         *buffer = Some(buf);
         *allocation = Some(alloc);
@@ -66,14 +78,18 @@ pub(super) fn upload_dynamic_buffer(
         .as_ref()
         .expect("dynamic buffer allocation must exist");
     unsafe {
-        let ptr = device
-            .map_memory(
-                alloc.memory(),
-                alloc.offset(),
-                size,
-                vk::MemoryMapFlags::empty(),
-            )
-            .unwrap();
+        let ptr = match device.map_memory(
+            alloc.memory(),
+            alloc.offset(),
+            size,
+            vk::MemoryMapFlags::empty(),
+        ) {
+            Ok(ptr) => ptr,
+            Err(e) => {
+                log::error!("upload_dynamic_buffer: map_memory failed: {e:?}");
+                return;
+            }
+        };
         std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
         device.unmap_memory(alloc.memory());
     }
@@ -89,10 +105,10 @@ pub(super) fn create_rgba_texture(
     height: u32,
     allocation_name: &'static str,
 ) -> (
-    vk::Image,
-    vk::ImageView,
+    super::raii::Image,
+    super::raii::ImageView,
     gpu_allocator::vulkan::Allocation,
-    vk::Sampler,
+    super::raii::Sampler,
 ) {
     let size = (width * height * 4) as u64;
     assert_eq!(pixels.len() as u64, size);
@@ -297,66 +313,15 @@ pub(super) fn create_rgba_texture(
     }
     .unwrap();
 
-    (image, view, allocation, sampler)
+    (
+        super::raii::Image::from_handle(device.clone(), image),
+        super::raii::ImageView::from_handle(device.clone(), view),
+        allocation,
+        super::raii::Sampler::from_handle(device.clone(), sampler),
+    )
 }
 
 impl super::Renderer {
-    // --- Uniform buffers ---
-
-    pub(super) fn create_uniform_buffers(
-        device: &ash::Device,
-        allocator: &mut gpu_allocator::vulkan::Allocator,
-    ) -> (
-        Vec<vk::Buffer>,
-        Vec<gpu_allocator::vulkan::Allocation>,
-        Vec<*mut std::ffi::c_void>,
-    ) {
-        let mut bufs = Vec::with_capacity(MAX_FRAMES);
-        let mut allocs = Vec::with_capacity(MAX_FRAMES);
-        let mut mapped = Vec::with_capacity(MAX_FRAMES);
-        let size = std::mem::size_of::<Uniforms>() as u64;
-        for _ in 0..MAX_FRAMES {
-            let buf = unsafe {
-                device.create_buffer(
-                    &vk::BufferCreateInfo {
-                        size,
-                        usage: vk::BufferUsageFlags::UNIFORM_BUFFER,
-                        ..Default::default()
-                    },
-                    None,
-                )
-            }
-            .unwrap();
-            let reqs = unsafe { device.get_buffer_memory_requirements(buf) };
-            let alloc = allocator
-                .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-                    name: "uniform",
-                    requirements: reqs,
-                    location: gpu_allocator::MemoryLocation::CpuToGpu,
-                    linear: true,
-                    allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-                })
-                .unwrap();
-            unsafe {
-                device
-                    .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
-                    .unwrap();
-                let ptr = device
-                    .map_memory(
-                        alloc.memory(),
-                        alloc.offset(),
-                        size,
-                        vk::MemoryMapFlags::empty(),
-                    )
-                    .unwrap();
-                mapped.push(ptr);
-            };
-            bufs.push(buf);
-            allocs.push(alloc);
-        }
-        (bufs, allocs, mapped)
-    }
-
     // --- Standalone device buffer helper (used before Renderer is constructed) ---
 
     pub(super) fn create_buffer_standalone(
@@ -459,7 +424,7 @@ impl super::Renderer {
                 gpu_allocator::vulkan::Allocation::default(),
             );
         }
-        let buf = unsafe {
+        let buf = match unsafe {
             self.device.create_buffer(
                 &vk::BufferCreateInfo {
                     size,
@@ -468,32 +433,64 @@ impl super::Renderer {
                 },
                 None,
             )
-        }
-        .unwrap();
+        } {
+            Ok(buf) => buf,
+            Err(e) => {
+                log::error!("create_device_buffer: create_buffer failed: {e:?}");
+                return (
+                    vk::Buffer::null(),
+                    gpu_allocator::vulkan::Allocation::default(),
+                );
+            }
+        };
         let reqs = unsafe { self.device.get_buffer_memory_requirements(buf) };
-        let alloc = self
-            .allocator
-            .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-                name: "mesh_buf",
-                requirements: reqs,
-                location: gpu_allocator::MemoryLocation::CpuToGpu,
-                linear: true,
-                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-            })
-            .unwrap();
+        let alloc = match self.resources.allocator_mut().allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+            name: "mesh_buf",
+            requirements: reqs,
+            location: gpu_allocator::MemoryLocation::CpuToGpu,
+            linear: true,
+            allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+        }) {
+            Ok(alloc) => alloc,
+            Err(e) => {
+                log::error!("create_device_buffer: allocate failed: {e:?}");
+                unsafe { self.device.destroy_buffer(buf, None); }
+                return (
+                    vk::Buffer::null(),
+                    gpu_allocator::vulkan::Allocation::default(),
+                );
+            }
+        };
         unsafe {
-            self.device
-                .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
-                .unwrap();
-            let ptr = self
+            if let Err(e) = self
                 .device
-                .map_memory(
-                    alloc.memory(),
-                    alloc.offset(),
-                    size,
-                    vk::MemoryMapFlags::empty(),
-                )
-                .unwrap();
+                .bind_buffer_memory(buf, alloc.memory(), alloc.offset())
+            {
+                log::error!("create_device_buffer: bind_buffer_memory failed: {e:?}");
+                self.device.destroy_buffer(buf, None);
+                let _ = self.resources.allocator_mut().free(alloc);
+                return (
+                    vk::Buffer::null(),
+                    gpu_allocator::vulkan::Allocation::default(),
+                );
+            }
+            let ptr = match self.device.map_memory(
+                alloc.memory(),
+                alloc.offset(),
+                size,
+                vk::MemoryMapFlags::empty(),
+            ) {
+                Ok(ptr) => ptr,
+                Err(e) => {
+                    log::error!("create_device_buffer: map_memory failed: {e:?}");
+                    self.device.destroy_buffer(buf, None);
+                    let _ = self.resources.allocator_mut().free(alloc);
+                    return (
+                        vk::Buffer::null(),
+                        gpu_allocator::vulkan::Allocation::default(),
+                    );
+                }
+            };
             std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, data.len());
             self.device.unmap_memory(alloc.memory());
         }
@@ -509,10 +506,10 @@ impl super::Renderer {
         queue: vk::Queue,
         resolver: &mut crate::assets::resolver::AssetResolver,
     ) -> (
-        vk::Image,
-        vk::ImageView,
+        super::raii::Image,
+        super::raii::ImageView,
         gpu_allocator::vulkan::Allocation,
-        vk::Sampler,
+        super::raii::Sampler,
         texture::TextureAtlas,
     ) {
         let atlas = texture::TextureAtlas::load_with_resolver(resolver);
@@ -577,7 +574,7 @@ impl super::Renderer {
 
         upload_dynamic_buffer(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             &mut self.block_animation_buffers[frame],
             &mut self.block_animation_allocs[frame],
             &mut self.block_animation_capacities[frame],
@@ -671,10 +668,10 @@ impl super::Renderer {
         queue: vk::Queue,
         atlas: &super::entity::atlas::EntityTextureAtlas,
     ) -> (
-        vk::Image,
-        vk::ImageView,
+        super::raii::Image,
+        super::raii::ImageView,
         gpu_allocator::vulkan::Allocation,
-        vk::Sampler,
+        super::raii::Sampler,
     ) {
         use super::entity::atlas::ENTITY_ATLAS_SIZE;
         create_rgba_texture(
@@ -797,65 +794,99 @@ fn upload_gpu_image_with_layout(
         "GPU image upload requires tightly packed RGBA pixels"
     );
     let size = expected_len as u64;
-    let staging = unsafe {
-        device
-            .create_buffer(
-                &vk::BufferCreateInfo {
-                    size,
-                    usage: vk::BufferUsageFlags::TRANSFER_SRC,
-                    ..Default::default()
-                },
-                None,
-            )
-            .unwrap()
+    let staging = match unsafe {
+        device.create_buffer(
+            &vk::BufferCreateInfo {
+                size,
+                usage: vk::BufferUsageFlags::TRANSFER_SRC,
+                ..Default::default()
+            },
+            None,
+        )
+    } {
+        Ok(buf) => buf,
+        Err(e) => {
+            log::error!("upload_gpu_image_with_layout: create_buffer failed: {e:?}");
+            return;
+        }
     };
     let s_reqs = unsafe { device.get_buffer_memory_requirements(staging) };
-    let s_alloc = allocator
-        .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-            name: "rp-staging",
-            requirements: s_reqs,
-            location: gpu_allocator::MemoryLocation::CpuToGpu,
-            linear: true,
-            allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-        })
-        .unwrap();
-    unsafe {
-        device
-            .bind_buffer_memory(staging, s_alloc.memory(), s_alloc.offset())
-            .unwrap();
+    let s_alloc = match allocator.allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+        name: "rp-staging",
+        requirements: s_reqs,
+        location: gpu_allocator::MemoryLocation::CpuToGpu,
+        linear: true,
+        allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+    }) {
+        Ok(alloc) => alloc,
+        Err(e) => {
+            log::error!("upload_gpu_image_with_layout: allocate failed: {e:?}");
+            unsafe { device.destroy_buffer(staging, None); }
+            return;
+        }
+    };
+    if let Err(e) = unsafe {
+        device.bind_buffer_memory(staging, s_alloc.memory(), s_alloc.offset())
+    } {
+        log::error!("upload_gpu_image_with_layout: bind_buffer_memory failed: {e:?}");
+        unsafe { device.destroy_buffer(staging, None); }
+        let _ = allocator.free(s_alloc);
+        return;
     }
     unsafe {
-        let ptr = device
-            .map_memory(
-                s_alloc.memory(),
-                s_alloc.offset(),
-                size,
-                vk::MemoryMapFlags::empty(),
-            )
-            .unwrap();
+        let ptr = match device.map_memory(
+            s_alloc.memory(),
+            s_alloc.offset(),
+            size,
+            vk::MemoryMapFlags::empty(),
+        ) {
+            Ok(ptr) => ptr,
+            Err(e) => {
+                log::error!("upload_gpu_image_with_layout: map_memory failed: {e:?}");
+                device.destroy_buffer(staging, None);
+                let _ = allocator.free(s_alloc);
+                return;
+            }
+        };
         std::ptr::copy_nonoverlapping(pixels.as_ptr(), ptr as *mut u8, pixels.len());
         device.unmap_memory(s_alloc.memory());
     }
-    let cb = unsafe {
-        device
-            .allocate_command_buffers(&vk::CommandBufferAllocateInfo {
-                command_pool,
-                level: vk::CommandBufferLevel::PRIMARY,
-                command_buffer_count: 1,
-                ..Default::default()
-            })
-            .unwrap()[0]
+    let cb = match unsafe {
+        device.allocate_command_buffers(&vk::CommandBufferAllocateInfo {
+            command_pool,
+            level: vk::CommandBufferLevel::PRIMARY,
+            command_buffer_count: 1,
+            ..Default::default()
+        })
+    } {
+        Ok(buffers) if !buffers.is_empty() => buffers[0],
+        Err(e) => {
+            log::error!("upload_gpu_image_with_layout: allocate_command_buffers failed: {e:?}");
+            unsafe { device.destroy_buffer(staging, None); }
+            let _ = allocator.free(s_alloc);
+            return;
+        }
+        _ => {
+            log::error!("upload_gpu_image_with_layout: allocate_command_buffers returned no buffers");
+            unsafe { device.destroy_buffer(staging, None); }
+            let _ = allocator.free(s_alloc);
+            return;
+        }
     };
     unsafe {
-        device
-            .begin_command_buffer(
-                cb,
-                &vk::CommandBufferBeginInfo {
-                    flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
-                    ..Default::default()
-                },
-            )
-            .unwrap();
+        if let Err(e) = device.begin_command_buffer(
+            cb,
+            &vk::CommandBufferBeginInfo {
+                flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+                ..Default::default()
+            },
+        ) {
+            log::error!("upload_gpu_image_with_layout: begin_command_buffer failed: {e:?}");
+            device.free_command_buffers(command_pool, &[cb]);
+            device.destroy_buffer(staging, None);
+            let _ = allocator.free(s_alloc);
+            return;
+        }
         let (source_stage, source_access) = if old_layout == vk::ImageLayout::UNDEFINED {
             (
                 vk::PipelineStageFlags::TOP_OF_PIPE,
@@ -925,25 +956,52 @@ fn upload_gpu_image_with_layout(
                 ..Default::default()
             }],
         );
-        device.end_command_buffer(cb).unwrap();
-        let fence = device
-            .create_fence(&vk::FenceCreateInfo::default(), None)
-            .unwrap();
-        device
-            .queue_submit(
-                queue,
-                &[vk::SubmitInfo {
-                    command_buffer_count: 1,
-                    p_command_buffers: &cb,
-                    ..Default::default()
-                }],
-                fence,
-            )
-            .unwrap();
-        device.wait_for_fences(&[fence], true, u64::MAX).unwrap();
+        if let Err(e) = device.end_command_buffer(cb) {
+            log::error!("upload_gpu_image_with_layout: end_command_buffer failed: {e:?}");
+            device.free_command_buffers(command_pool, &[cb]);
+            device.destroy_buffer(staging, None);
+            let _ = allocator.free(s_alloc);
+            return;
+        }
+        let fence = match device.create_fence(&vk::FenceCreateInfo::default(), None) {
+            Ok(fence) => fence,
+            Err(e) => {
+                log::error!("upload_gpu_image_with_layout: create_fence failed: {e:?}");
+                device.free_command_buffers(command_pool, &[cb]);
+                device.destroy_buffer(staging, None);
+                let _ = allocator.free(s_alloc);
+                return;
+            }
+        };
+        if let Err(e) = device.queue_submit(
+            queue,
+            &[vk::SubmitInfo {
+                command_buffer_count: 1,
+                p_command_buffers: &cb,
+                ..Default::default()
+            }],
+            fence,
+        ) {
+            log::error!("upload_gpu_image_with_layout: queue_submit failed: {e:?}");
+            device.destroy_fence(fence, None);
+            device.free_command_buffers(command_pool, &[cb]);
+            device.destroy_buffer(staging, None);
+            let _ = allocator.free(s_alloc);
+            return;
+        }
+        if let Err(e) = device.wait_for_fences(&[fence], true, 1_000_000_000) {
+            log::error!("upload_gpu_image_with_layout: wait_for_fences failed: {e:?}");
+            device.destroy_fence(fence, None);
+            device.free_command_buffers(command_pool, &[cb]);
+            device.destroy_buffer(staging, None);
+            let _ = allocator.free(s_alloc);
+            return;
+        }
         device.destroy_fence(fence, None);
         device.free_command_buffers(command_pool, &[cb]);
         device.destroy_buffer(staging, None);
     }
-    allocator.free(s_alloc).unwrap();
+    if let Err(e) = allocator.free(s_alloc) {
+        log::error!("upload_gpu_image_with_layout: free staging allocation failed: {e:?}");
+    }
 }

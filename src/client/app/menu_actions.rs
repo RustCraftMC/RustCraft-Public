@@ -7,7 +7,7 @@ use winit::event_loop::ActiveEventLoop;
 
 impl App {
     pub(super) fn connect_to_configured_server(&mut self) {
-        if self.connection.is_some() || self.connect_task.is_some() {
+        if self.net_ctrl.connection.is_some() || self.net_ctrl.connect_task.is_some() {
             return;
         }
         let addr = if matches!(self.state, GameState::Multiplayer) {
@@ -27,7 +27,7 @@ impl App {
         self.config.save_default();
         self.session
             .push_system_line(self.ui.i18n.tf("rustcraft.connection.connecting", &[&addr]));
-        self.connect_task = Some(super::tasks::ConnectTask::spawn(
+        self.net_ctrl.connect_task = Some(super::tasks::ConnectTask::spawn(
             addr,
             self.username.clone(),
             self.account.clone(),
@@ -53,7 +53,7 @@ impl App {
                 // Drop renderer while window is still alive so Vulkan surface
                 // cleanup doesn't access a destroyed window handle.
                 self.renderer = None;
-                self.connection = None;
+                self.net_ctrl.connection = None;
                 event_loop.exit();
             }
             btn::MULTIPLAYER => {
@@ -220,20 +220,20 @@ impl App {
             btn::PAUSE_OPTIONS => self.open_options(),
             btn::DISCONNECT => self.disconnect_to_main_menu(),
             btn::RESPAWN => {
-                crate::client::network::send_respawn_request(&self.connection);
+                crate::client::network::send_respawn_request(&self.net_ctrl.connection);
             }
             btn::DEATH_TITLE_SCREEN => self.disconnect_to_main_menu(),
             btn::GUI_SCALE_DOWN => {
                 if let Some(renderer) = &mut self.renderer {
-                    renderer.state.gui_scale = renderer.state.gui_scale.saturating_sub(1).max(1);
-                    self.config.gui_scale = renderer.state.gui_scale;
+                    renderer.state.settings.set_gui_scale(renderer.state.settings.gui_scale().saturating_sub(1).max(1));
+                    self.config.gui_scale = renderer.state.settings.gui_scale();
                     self.config.save_default();
                 }
             }
             btn::GUI_SCALE_UP => {
                 if let Some(renderer) = &mut self.renderer {
-                    renderer.state.gui_scale = (renderer.state.gui_scale + 1).min(4);
-                    self.config.gui_scale = renderer.state.gui_scale;
+                    renderer.state.settings.set_gui_scale((renderer.state.settings.gui_scale() + 1).min(4));
+                    self.config.gui_scale = renderer.state.settings.gui_scale();
                     self.config.save_default();
                 }
             }
@@ -391,24 +391,24 @@ impl App {
             }
             btn::RESET_CONTROLS => {
                 for action in crate::client::keybind::Action::all_bindable() {
-                    match self.control_device {
+                    match self.input_ctrl.control_device {
                         crate::client::keybind::ControlDevice::KeyboardMouse => {
-                            self.keybinds.reset_action(*action)
+                            self.input_ctrl.keybinds.reset_action(*action)
                         }
                         crate::client::keybind::ControlDevice::Gamepad => {
-                            self.keybinds.reset_gamepad_action(*action)
+                            self.input_ctrl.keybinds.reset_gamepad_action(*action)
                         }
                     }
                 }
-                self.config.keybinds = self.keybinds.clone();
+                self.config.keybinds = self.input_ctrl.keybinds.clone();
                 self.config.save_default();
-                self.rebinding_action = None;
+                self.input_ctrl.rebinding_action = None;
                 self.session
                     .push_system_line(self.ui.t("controls.resetAll"));
             }
             btn::CONTROL_DEVICE_TOGGLE => {
-                self.rebinding_action = None;
-                self.control_device = match self.control_device {
+                self.input_ctrl.rebinding_action = None;
+                self.input_ctrl.control_device = match self.input_ctrl.control_device {
                     crate::client::keybind::ControlDevice::KeyboardMouse => {
                         crate::client::keybind::ControlDevice::Gamepad
                     }
@@ -480,8 +480,7 @@ impl App {
                 self.config.save_default();
                 self.scan_and_update_shader_packs();
                 if let Some(renderer) = &mut self.renderer {
-                    renderer.state.shader_pack_status =
-                        "Shaders disabled; restart to apply".to_string();
+                    renderer.state.server_list.set_shader_pack_status("Shaders disabled; restart to apply".to_string());
                 }
             }
             btn::DONE => self.return_to_previous_screen(),
@@ -578,10 +577,10 @@ impl App {
             }
             btn::DIRECT_ADDRESS_FIELD => {}
             btn::CONNECT => {
-                self.connection = None;
+                self.net_ctrl.connection = None;
                 self.state = GameState::Connecting;
                 self.connect_to_configured_server();
-                self.mouse_captured = false;
+                self.input_ctrl.mouse_captured = false;
                 self.set_cursor_captured(false);
             }
             btn::REFRESH_SERVER_LIST => {
@@ -629,10 +628,10 @@ impl App {
                             });
                     self.last_server_click = Some((idx, now));
                     if double_clicked {
-                        self.connection = None;
+                        self.net_ctrl.connection = None;
                         self.state = GameState::Connecting;
                         self.connect_to_configured_server();
-                        self.mouse_captured = false;
+                        self.input_ctrl.mouse_captured = false;
                         self.set_cursor_captured(false);
                     }
                 }
@@ -711,10 +710,7 @@ impl App {
             {
                 let index = (id - btn::SHADER_PACK_BASE) as usize;
                 let selected = self.renderer.as_ref().and_then(|renderer| {
-                    renderer
-                        .state
-                        .shader_packs
-                        .get(index)
+                    renderer.state.server_list.shader_packs().get(index)
                         .filter(|pack| pack.compatible)
                         .map(|pack| pack.source_name.clone())
                 });
@@ -723,8 +719,7 @@ impl App {
                     self.config.save_default();
                     self.scan_and_update_shader_packs();
                     if let Some(renderer) = &mut self.renderer {
-                        renderer.state.shader_pack_status =
-                            format!("Selected {selected}; restart to apply");
+                        renderer.state.server_list.set_shader_pack_status(format!("Selected {selected}; restart to apply"));
                     }
                 }
             }
@@ -732,25 +727,25 @@ impl App {
                 && id < btn::CONTROL_BIND_BASE + btn::CONTROL_BIND_MAX as u32 =>
             {
                 let idx = (id - btn::CONTROL_BIND_BASE) as usize;
-                self.rebinding_action = crate::client::keybind::Action::from_bindable_index(idx);
+                self.input_ctrl.rebinding_action = crate::client::keybind::Action::from_bindable_index(idx);
             }
             id if id >= btn::CONTROL_RESET_BASE
                 && id < btn::CONTROL_RESET_BASE + btn::CONTROL_BIND_MAX as u32 =>
             {
                 let idx = (id - btn::CONTROL_RESET_BASE) as usize;
                 if let Some(action) = crate::client::keybind::Action::from_bindable_index(idx) {
-                    match self.control_device {
+                    match self.input_ctrl.control_device {
                         crate::client::keybind::ControlDevice::KeyboardMouse => {
-                            self.keybinds.reset_action(action)
+                            self.input_ctrl.keybinds.reset_action(action)
                         }
                         crate::client::keybind::ControlDevice::Gamepad => {
-                            self.keybinds.reset_gamepad_action(action)
+                            self.input_ctrl.keybinds.reset_gamepad_action(action)
                         }
                     }
-                    self.config.keybinds = self.keybinds.clone();
+                    self.config.keybinds = self.input_ctrl.keybinds.clone();
                     self.config.save_default();
-                    if self.rebinding_action == Some(action) {
-                        self.rebinding_action = None;
+                    if self.input_ctrl.rebinding_action == Some(action) {
+                        self.input_ctrl.rebinding_action = None;
                     }
                 }
             }
@@ -799,7 +794,7 @@ impl App {
         let Some(hit) = hit else {
             return false;
         };
-        let value = slider_value_from_mouse(self.mouse_x as f32, hit.x, hit.w, hit.h);
+        let value = slider_value_from_mouse(self.input_ctrl.mouse_x as f32, hit.x, hit.w, hit.h);
 
         if self.set_slider_value(button_id, value) {
             // Vanilla GuiOptionSlider starts dragging immediately on mouse press.
@@ -823,7 +818,7 @@ impl App {
             self.active_slider = None;
             return;
         };
-        let value = slider_value_from_mouse(self.mouse_x as f32, hit.x, hit.w, hit.h);
+        let value = slider_value_from_mouse(self.input_ctrl.mouse_x as f32, hit.x, hit.w, hit.h);
         self.set_slider_value(button_id, value);
     }
 
@@ -832,7 +827,7 @@ impl App {
             btn::GUI_SCALE_DOWN => {
                 self.config.gui_scale = (1 + (value * 3.0).round() as u32).clamp(1, 4);
                 if let Some(renderer) = &mut self.renderer {
-                    renderer.state.gui_scale = self.config.gui_scale;
+                    renderer.state.settings.set_gui_scale(self.config.gui_scale);
                 }
                 self.config.save_default();
                 true
@@ -920,7 +915,7 @@ impl App {
     }
 
     pub(super) fn start_server_refresh(&mut self) {
-        if self.server_refresh_task.is_some() {
+        if self.net_ctrl.server_refresh_task.is_some() {
             return;
         }
         let servers = crate::client::server_list::ServerList::load_default();
@@ -928,7 +923,7 @@ impl App {
         self.selected_server = self
             .selected_server
             .min(self.servers.servers.len().saturating_sub(1));
-        self.server_refresh_task = Some(super::tasks::ServerRefreshTask::spawn(servers));
+        self.net_ctrl.server_refresh_task = Some(super::tasks::ServerRefreshTask::spawn(servers));
     }
 
     pub(super) fn return_to_previous_screen(&mut self) {
@@ -952,7 +947,7 @@ impl App {
                 self.state = *previous
             }
             GameState::Controls { previous } => {
-                self.rebinding_action = None;
+                self.input_ctrl.rebinding_action = None;
                 self.state = *previous;
             }
             _ => {}
@@ -970,7 +965,7 @@ impl App {
             renderer.upload_world(&meshes);
         }
         self.set_cursor_captured(true);
-        self.mouse_captured = true;
+        self.input_ctrl.mouse_captured = true;
         self.tick_timer = TickTimer::new();
     }
 
@@ -979,7 +974,7 @@ impl App {
             self.disconnect_to_main_menu();
         } else {
             self.state = GameState::Playing;
-            self.mouse_captured = true;
+            self.input_ctrl.mouse_captured = true;
             self.set_cursor_captured(true);
         }
     }
@@ -992,12 +987,12 @@ impl App {
         self.dig.cancel();
         self.pending_dig_cancel = None;
         self.block_hit_delay = 0;
-        self.mouse_captured = false;
+        self.input_ctrl.mouse_captured = false;
         self.set_cursor_captured(false);
         self.inventory_open = false;
         self.inventory_action_number = 0;
         self.unload_server_state();
-        self.connection = None;
+        self.net_ctrl.connection = None;
         self.scripts.notify_disconnect(reason);
         self.state = GameState::Disconnected {
             reason: reason.to_string(),
@@ -1015,9 +1010,9 @@ impl App {
         self.block_hit_delay = 0;
         self.inventory_open = false;
         self.inventory_action_number = 0;
-        self.connection = None;
+        self.net_ctrl.connection = None;
         self.scripts.set_connection_active(false);
-        self.mouse_captured = false;
+        self.input_ctrl.mouse_captured = false;
         self.set_cursor_captured(false);
         self.unload_server_state();
     }
@@ -1037,7 +1032,7 @@ impl App {
         }
 
         self.entities = crate::entity::EntityManager::new();
-        self.network_state = crate::client::network::ClientNetworkState::new();
+        self.net_ctrl.network_state = crate::client::network::ClientNetworkState::new();
         self.inventory = crate::client::inventory::Inventory::new();
         self.inventory_open = false;
         self.particles = crate::client::particles::ParticleSystem::new(4096);
@@ -1109,7 +1104,7 @@ impl App {
         self.mod_config_selected = 0;
         self.mod_config_status.clear();
         if let Some(renderer) = &mut self.renderer {
-            renderer.state.mod_config_scroll = 0;
+            renderer.state.server_list.set_mod_config_scroll(0);
         }
     }
 
@@ -1270,12 +1265,12 @@ impl App {
 
     fn sync_chat_settings(&mut self) {
         if let Some(renderer) = &mut self.renderer {
-            renderer.state.chat_width = self.config.chat_width;
-            renderer.state.chat_height = self.config.chat_height;
-            renderer.state.chat_background = self.config.chat_background;
-            renderer.state.chat_overlay = self.config.chat_overlay;
-            renderer.state.chat_player_avatars = self.config.chat_player_avatars;
-            renderer.state.tab_player_avatars = self.config.tab_player_avatars;
+            renderer.state.hud.set_chat_width(self.config.chat_width);
+            renderer.state.hud.set_chat_height(self.config.chat_height);
+            renderer.state.hud.set_chat_background(self.config.chat_background);
+            renderer.state.hud.set_chat_overlay(self.config.chat_overlay);
+            renderer.state.hud.set_chat_player_avatars(self.config.chat_player_avatars);
+            renderer.state.hud.set_tab_player_avatars(self.config.tab_player_avatars);
         }
     }
 
@@ -1285,7 +1280,7 @@ impl App {
         self.session.view_distance = self.config.render_distance;
         self.session.skin_parts = self.config.skin_parts;
         crate::client::network::send_client_settings(
-            &self.connection,
+            &self.net_ctrl.connection,
             &self.session.locale,
             self.session.view_distance,
             self.session.skin_parts,
@@ -1303,16 +1298,16 @@ impl App {
             return;
         };
         let hash = pack.hash.clone();
-        crate::client::network::send_resource_pack_status(&self.connection, &hash, 3);
+        crate::client::network::send_resource_pack_status(&self.net_ctrl.connection, &hash, 3);
         pack.status = "accepted".to_string();
         self.session
             .push_system_line(self.ui.t("rustcraft.resourcePack.acceptedPending"));
-        crate::client::network::send_resource_pack_status(&self.connection, &hash, 0);
+        crate::client::network::send_resource_pack_status(&self.net_ctrl.connection, &hash, 0);
         if let Some(pack) = &mut self.session.resource_pack {
             pack.status = "loaded".to_string();
         }
         if matches!(self.state, GameState::Playing) && !self.chat_open && !self.inventory_open {
-            self.mouse_captured = true;
+            self.input_ctrl.mouse_captured = true;
             self.set_cursor_captured(true);
         }
     }
@@ -1322,12 +1317,12 @@ impl App {
             return;
         };
         let hash = pack.hash.clone();
-        crate::client::network::send_resource_pack_status(&self.connection, &hash, 1);
+        crate::client::network::send_resource_pack_status(&self.net_ctrl.connection, &hash, 1);
         pack.status = "declined".to_string();
         self.session
             .push_system_line(self.ui.t("rustcraft.resourcePack.declined"));
         if matches!(self.state, GameState::Playing) && !self.chat_open && !self.inventory_open {
-            self.mouse_captured = true;
+            self.input_ctrl.mouse_captured = true;
             self.set_cursor_captured(true);
         }
     }
@@ -1448,13 +1443,13 @@ impl App {
         let enabled = self.config.enabled_resource_packs.clone();
         self.resource_pack_list = super::scan_resource_packs(&enabled);
         if let Some(renderer) = &mut self.renderer {
-            renderer.state.available_resource_packs = self
+            renderer.state.server_list.set_available_resource_packs(self
                 .resource_pack_list
                 .iter()
                 .filter(|p| !p.enabled)
                 .cloned()
-                .collect();
-            renderer.state.selected_resource_packs = enabled
+                .collect());
+            renderer.state.server_list.set_selected_resource_packs(enabled
                 .iter()
                 .filter_map(|name| {
                     self.resource_pack_list
@@ -1462,11 +1457,8 @@ impl App {
                         .find(|pack| pack.name == *name)
                         .cloned()
                 })
-                .collect();
-            renderer
-                .state
-                .selected_resource_packs
-                .push(crate::client::app::ResourcePackInfo {
+                .collect());
+            renderer.state.server_list.selected_resource_packs_mut().push(crate::client::app::ResourcePackInfo {
                     name: "Default".to_string(),
                     enabled: true,
                     is_default: true,
@@ -1482,12 +1474,11 @@ impl App {
             return;
         };
         let capabilities = crate::render::shader_pack::RenderCapabilities {
-            ray_tracing: renderer.state.ray_tracing_available,
-            fsr3: renderer.state.fsr3_available,
+            ray_tracing: renderer.state.server_list.ray_tracing_available(),
+            fsr3: renderer.state.server_list.fsr3_available(),
         };
-        renderer.state.shader_packs =
-            crate::render::shader_pack::discover_shader_packs(capabilities);
-        renderer.state.selected_shader_pack = self.config.shader_pack.clone();
+        renderer.state.server_list.set_shader_packs(crate::render::shader_pack::discover_shader_packs(capabilities));
+        renderer.state.server_list.set_selected_shader_pack(self.config.shader_pack.clone());
     }
 }
 

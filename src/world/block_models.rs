@@ -6,12 +6,19 @@
 //! UVs, cullface) to produce a BakedModel ready for the mesh builder.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::Arc;
+
+use arc_swap::ArcSwapOption;
 
 use crate::assets::model::{BlockModel, ModelRegistry};
 
 /// Global model cache — initialised at startup, replaced on resource pack reload.
-static MODEL_CACHE: Mutex<Option<Box<BlockModelCache>>> = Mutex::new(None);
+///
+/// Stored in an `ArcSwapOption` so that `global()` can hand out `Arc<BlockModelCache>`
+/// clones without holding any lock. Hot reload via `init()` atomically swaps in
+/// a new `Arc`; previously handed-out clones stay valid until their refcount
+/// drops to zero, eliminating the old `'static`-forging UB.
+static MODEL_CACHE: ArcSwapOption<BlockModelCache> = ArcSwapOption::const_empty();
 
 /// Cached baked models keyed by (block_id, metadata).
 pub struct BlockModelCache {
@@ -93,28 +100,23 @@ impl BlockModelCache {
 
     /// Initialise or replace the global cache. Previous cache is dropped.
     pub fn init(cache: BlockModelCache) {
-        if let Ok(mut lock) = MODEL_CACHE.lock() {
-            *lock = Some(Box::new(cache));
-        }
+        MODEL_CACHE.store(Some(Arc::new(cache)));
     }
 
     /// Access the global cache (panics if not initialised).
-    /// The returned reference must not be held across calls to [`init`].
-    pub fn global() -> &'static BlockModelCache {
-        let guard = MODEL_CACHE.lock().unwrap();
-        let bx = guard.as_ref().expect("BlockModelCache not initialised");
-        // SAFETY: Callers use the reference immediately and never hold it
-        // across an `init()` call (which only occurs during resource reload).
-        unsafe { &*(bx.as_ref() as *const BlockModelCache) }
+    ///
+    /// Returns a freshly cloned `Arc<BlockModelCache>`. The clone keeps the
+    /// underlying cache alive even if a concurrent `init()` swaps in a newer
+    /// one, so callers may hold the returned `Arc` for as long as needed.
+    pub fn global() -> Arc<BlockModelCache> {
+        MODEL_CACHE
+            .load_full()
+            .expect("BlockModelCache not initialised")
     }
 
     /// Check if the global cache is available.
     pub fn is_available() -> bool {
-        MODEL_CACHE
-            .lock()
-            .ok()
-            .map(|l| l.is_some())
-            .unwrap_or(false)
+        MODEL_CACHE.load().is_some()
     }
 }
 

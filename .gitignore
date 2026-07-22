@@ -1,12 +1,81 @@
+# ---------------------------------------------------------------------------
+# Build / binary
+# ---------------------------------------------------------------------------
 /target/
+/rustcraft
 /rustcraft.exe
 /rustcraft.pdb
-options.json
-servers.json
-/auth_accounts.json
+**/*.pdb
+**/*.exe
+**/*.o
+**/*.so
+**/*.dylib
+**/*.a
+
+# ---------------------------------------------------------------------------
+# Minecraft proprietary assets (user must supply from a legal install)
+# Do NOT commit Mojang-owned textures, models, objects, or indexes.
+# Project-owned files under assets/ that ARE tracked:
+#   - assets/fonts/
+#   - assets/icon.ico / icon.rc
+#   - assets/minecraft/lang/*.lang  (includes RustCraft custom keys)
+# ---------------------------------------------------------------------------
+/assets/indexes/
+/assets/objects/
+/assets/minecraft/blockstates/
+/assets/minecraft/font/
+/assets/minecraft/models/
+/assets/minecraft/shaders/
+/assets/minecraft/texts/
+/assets/minecraft/textures/
 /assets/skins/
-/mods/*/data/
-/minecraft/Grim-2.0/
-/mods/*/config.json
-/logs/
 /assets/capes/
+
+# ---------------------------------------------------------------------------
+# Client runtime / local config (generated while playing)
+# ---------------------------------------------------------------------------
+/options.json
+/servers.json
+/auth_accounts.json
+/logs/
+/crash-reports/
+/saves/
+/screenshots/
+/resourcepacks/
+/shaderpacks/
+/server-resource-packs/
+/usercache.json
+/usernamecache.json
+/banned-*.json
+/ops.json
+/whitelist.json
+/eula.txt
+/server.properties
+/world/
+/world_nether/
+/world_the_end/
+*.log
+
+# ---------------------------------------------------------------------------
+# Mods local data / user config
+# ---------------------------------------------------------------------------
+/mods/*/data/
+/mods/*/config.json
+
+# ---------------------------------------------------------------------------
+# Local tooling / agent state
+# ---------------------------------------------------------------------------
+.omo/
+.codegraph/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Misc project-local paths
+# ---------------------------------------------------------------------------
+/minecraft/Grim-2.0/

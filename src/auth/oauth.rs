@@ -1,7 +1,8 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 
 use rand::Rng;
 use sha2::{Digest, Sha256};
@@ -12,6 +13,13 @@ const MICROSOFT_AUTHORIZE_URL: &str = "https://login.live.com/oauth20_authorize.
 const MICROSOFT_TOKEN_URL: &str = "https://login.live.com/oauth20_token.srf";
 const SCOPES: &str = "XboxLive.signin XboxLive.offline_access";
 const REDIRECT_URI: &str = "http://localhost:9812/in_game_account_switcher_long_enough_uri_to_prevent_accidental_leaks_on_screensharing_even_if_you_have_like_extremely_big_screen_though_it_might_not_mork_but_we_will_try_it_anyway_to_prevent_funny_things_from_happening_or_something";
+
+/// Local port bound for the OAuth redirect callback listener.
+const REDIRECT_PORT: u16 = 9812;
+/// Maximum time to wait for the browser callback before giving up.
+const OAUTH_TIMEOUT_SECS: u64 = 120;
+/// Sleep interval between non-blocking accept polls.
+const OAUTH_POLL_INTERVAL_MS: u64 = 50;
 
 fn base64url_encode(data: &[u8]) -> String {
     use base64::Engine;
@@ -31,11 +39,20 @@ fn code_challenge(verifier: &str) -> String {
 
 /// Perform the full Microsoft OAuth2 authorization code + PKCE flow.
 ///
-/// 1. Starts a local HTTP server on `127.0.0.1:<redirect_port>`.
+/// 1. Starts a local HTTP server on `127.0.0.1:9812` (InGameAccountSwitcher URI).
 /// 2. Opens the browser to the Microsoft login page.
 /// 3. Receives the authorization code via the redirect callback.
 /// 4. Exchanges the code for access + refresh tokens.
+///
+/// `redirect_port` must be `9812` to match the fixed `REDIRECT_URI` used by
+/// InGameAccountSwitcher; other values are rejected.
 pub fn microsoft_login(client_id: &str, redirect_port: u16) -> Result<MicrosoftToken, AuthError> {
+    if redirect_port != REDIRECT_PORT {
+        return Err(AuthError::OAuth(format!(
+            "redirect_port must be {REDIRECT_PORT} (InGameAccountSwitcher URI)"
+        )));
+    }
+
     let verifier = generate_code_verifier();
     let challenge = code_challenge(&verifier);
 
@@ -48,22 +65,22 @@ pub fn microsoft_login(client_id: &str, redirect_port: u16) -> Result<MicrosoftT
         challenge,
     );
 
-    let listener = TcpListener::bind("127.0.0.1:9812")
-        .map_err(|e| AuthError::OAuth(format!("Failed to bind port 9812: {}", e)))?;
+    let listener = TcpListener::bind(format!("127.0.0.1:{redirect_port}"))
+        .map_err(|e| AuthError::OAuth(format!("Failed to bind port {redirect_port}: {e}")))?;
     listener
         .set_nonblocking(true)
-        .map_err(|e| AuthError::OAuth(format!("Failed to set non-blocking: {}", e)))?;
+        .map_err(|e| AuthError::OAuth(format!("Failed to set non-blocking: {e}")))?;
 
     let auth_code: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
     let cancelled = Arc::new(AtomicBool::new(false));
 
     open_browser(&auth_url)
-        .map_err(|e| AuthError::OAuth(format!("Failed to open browser: {}", e)))?;
+        .map_err(|e| AuthError::OAuth(format!("Failed to open browser: {e}")))?;
 
     // Accept connections with timeout polling
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(OAUTH_TIMEOUT_SECS);
 
-    while deadline.elapsed().as_secs() < 120 {
+    while std::time::Instant::now() < deadline {
         match listener.accept() {
             Ok((stream, _)) => {
                 let code_clone = auth_code.clone();
@@ -72,23 +89,22 @@ pub fn microsoft_login(client_id: &str, redirect_port: u16) -> Result<MicrosoftT
                 if cancelled.load(Ordering::SeqCst) {
                     return Err(AuthError::Cancelled);
                 }
-                let has_code = { auth_code.lock().unwrap().is_some() };
+                let has_code = { auth_code.lock().is_some() };
                 if has_code {
                     break;
                 }
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                std::thread::sleep(std::time::Duration::from_millis(OAUTH_POLL_INTERVAL_MS));
             }
             Err(e) => {
-                return Err(AuthError::OAuth(format!("Server error: {}", e)));
+                return Err(AuthError::OAuth(format!("Server error: {e}")));
             }
         }
     }
 
     let code = auth_code
         .lock()
-        .unwrap()
         .take()
         .ok_or_else(|| AuthError::OAuth("No authorization code received (timeout)".into()))?;
 
@@ -108,7 +124,7 @@ fn handle_redirect(
     let request = String::from_utf8_lossy(&buf[..n]);
 
     let (status_line, body) = if let Some(code) = extract_code_from_request(&request) {
-        *auth_code.lock().unwrap() = Some(code);
+        *auth_code.lock() = Some(code);
         (
                 "HTTP/1.1 200 OK",
                 "<html><body><p>Authentication successful! You may close this window.</p></body></html>",

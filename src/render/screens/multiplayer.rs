@@ -15,17 +15,18 @@ impl Renderer {
         let sw = metrics.sw;
         let sh = metrics.sh;
         let gs = metrics.gs;
+        let text = self.state.settings.ui_text();
         draw_title(
-            self,
+            &mut self.font,
             font_gui,
             sw / 2.0,
             36.0 * gs,
-            "Alt Manager",
+            text.get("rustcraft.altmanager.title"),
             16.0 * gs,
             gs,
         );
-        let account = self.state.account_name.clone();
-        let status = self.state.account_status.clone();
+        let account = self.state.account.account_name().clone();
+        let status = self.state.account.account_status().clone();
         font_gui.draw_text_centered(
             &mut self.font,
             sw / 2.0,
@@ -44,31 +45,31 @@ impl Renderer {
         );
         let y = sh / 2.0 - 8.0 * gs;
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
             btn::ALT_LOGIN,
             [metrics.btn_x, y, metrics.btn_w, metrics.btn_h],
-            "Microsoft Login",
+            text.get("rustcraft.altmanager.addAccount"),
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
             btn::ALT_LOGOUT,
             [metrics.btn_x, y + 24.0 * gs, metrics.btn_w, metrics.btn_h],
-            "Log Out",
+            text.get("rustcraft.altmanager.remove"),
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
             btn::ALT_BACK,
             [metrics.btn_x, y + 48.0 * gs, metrics.btn_w, metrics.btn_h],
-            "Back",
+            text.get("gui.back"),
         );
     }
     pub(super) fn draw_multiplayer_menu(
@@ -79,21 +80,13 @@ impl Renderer {
         font_gui: &mut GuiVertexBuilder,
     ) {
         let _ = background_gui;
-        let text = self.state.ui_text.clone();
         let sw = metrics.sw;
         let sh = metrics.sh;
         let gs = metrics.gs;
         let font_size = metrics.font_sz;
 
-        draw_title(
-            self,
-            font_gui,
-            sw / 2.0,
-            20.0 * gs,
-            text.get("selectServer.title"),
-            12.0 * gs,
-            gs,
-        );
+        self.draw_standard_screen(metrics, font_gui, "selectServer.title", 20.0 * gs, 12.0 * gs);
+        let text = self.state.settings.ui_text();
 
         let list = GuiScrollList::new(
             0.0,
@@ -101,13 +94,13 @@ impl Renderer {
             sw,
             (sh - 96.0 * gs).max(36.0 * gs),
             36.0 * gs,
-            self.state.server_list.len(),
-            self.state.server_list_scroll,
+            self.state.server_list.server_list().len(),
+            self.state.server_list.server_list_scroll(),
         );
-        self.state.server_list_scroll = list.first_row;
+        self.state.server_list.set_server_list_scroll(list.first_row);
         list.draw_background(font_gui);
 
-        if self.state.server_list.is_empty() {
+        if self.state.server_list.server_list().is_empty() {
             font_gui.draw_text_centered(
                 &mut self.font,
                 sw / 2.0,
@@ -120,9 +113,9 @@ impl Renderer {
             let content_width = (306.0 * gs).min(sw - 24.0 * gs);
             let content_x = (sw - content_width) / 2.0;
             for index in list.visible_range() {
-                let server = self.state.server_list[index].clone();
+                let server = self.state.server_list.server_list_mut()[index].clone();
                 let row_y = list.row_y(index);
-                let selected = index == self.state.selected_server;
+                let selected = index == self.state.server_list.selected_server();
                 let hovered = metrics.mouse_pos[0] >= content_x
                     && metrics.mouse_pos[0] <= content_x + content_width
                     && metrics.mouse_pos[1] >= row_y
@@ -285,12 +278,12 @@ impl Renderer {
         list.draw_scrollbar(font_gui, gs);
         list.draw_edge_fades(font_gui, gs);
 
-        let has_selection = !self.state.server_list.is_empty()
-            && self.state.selected_server < self.state.server_list.len();
+        let has_selection = !self.state.server_list.server_list().is_empty()
+            && self.state.server_list.selected_server() < self.state.server_list.server_list().len();
         let top_button_y = sh - 52.0 * gs;
         let lower_button_y = sh - 28.0 * gs;
         draw_button_enabled(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -305,7 +298,7 @@ impl Renderer {
             has_selection,
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -319,7 +312,7 @@ impl Renderer {
             text.get("selectServer.direct"),
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -334,7 +327,7 @@ impl Renderer {
         );
 
         draw_button_enabled(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -349,7 +342,7 @@ impl Renderer {
             has_selection,
         );
         draw_button_enabled(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -364,7 +357,7 @@ impl Renderer {
             has_selection,
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -378,7 +371,7 @@ impl Renderer {
             text.get("selectServer.refresh"),
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -401,20 +394,12 @@ impl Renderer {
         font_gui: &mut GuiVertexBuilder,
     ) {
         let _ = background_gui;
-        let text = self.state.ui_text.clone();
         let sw = metrics.sw;
         let sh = metrics.sh;
         let gs = metrics.gs;
 
-        draw_title(
-            self,
-            font_gui,
-            sw / 2.0,
-            20.0 * gs,
-            text.get("selectServer.direct"),
-            12.0 * gs,
-            gs,
-        );
+        self.draw_standard_screen(metrics, font_gui, "selectServer.direct", 20.0 * gs, 12.0 * gs);
+        let text = self.state.settings.ui_text();
         let field_x = sw / 2.0 - 100.0 * gs;
         let field_y = 116.0 * gs;
         font_gui.draw_text(
@@ -426,7 +411,7 @@ impl Renderer {
             [0.65, 0.65, 0.65, 1.0],
         );
         draw_text_field(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -434,23 +419,23 @@ impl Renderer {
             field_x,
             field_y,
             200.0 * gs,
-            &self.state.server_address.clone(),
+            &self.state.server_list.server_address().clone(),
             true,
         );
 
         let button_y = sh / 4.0 + 108.0 * gs;
         draw_button_enabled(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
             btn::CONNECT,
             [metrics.btn_x, button_y, metrics.btn_w, metrics.btn_h],
             text.get("selectServer.select"),
-            !self.state.server_address.trim().is_empty(),
+            !self.state.server_list.server_address().trim().is_empty(),
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -473,20 +458,12 @@ impl Renderer {
         font_gui: &mut GuiVertexBuilder,
     ) {
         let _ = background_gui;
-        let text = self.state.ui_text.clone();
         let sw = metrics.sw;
         let sh = metrics.sh;
         let gs = metrics.gs;
 
-        draw_title(
-            self,
-            font_gui,
-            sw / 2.0,
-            17.0 * gs,
-            text.get("addServer.title"),
-            12.0 * gs,
-            gs,
-        );
+        self.draw_standard_screen(metrics, font_gui, "addServer.title", 17.0 * gs, 12.0 * gs);
+        let text = self.state.settings.ui_text();
 
         let field_x = sw / 2.0 - 100.0 * gs;
         font_gui.draw_text(
@@ -498,7 +475,7 @@ impl Renderer {
             [0.65, 0.65, 0.65, 1.0],
         );
         draw_text_field(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -506,8 +483,8 @@ impl Renderer {
             field_x,
             66.0 * gs,
             200.0 * gs,
-            &self.state.server_editor_name.clone(),
-            !self.state.server_editor_address_focused,
+            &self.state.server_list.server_editor_name().clone(),
+            !self.state.server_list.server_editor_address_focused(),
         );
 
         font_gui.draw_text(
@@ -519,7 +496,7 @@ impl Renderer {
             [0.65, 0.65, 0.65, 1.0],
         );
         draw_text_field(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -527,24 +504,24 @@ impl Renderer {
             field_x,
             106.0 * gs,
             200.0 * gs,
-            &self.state.server_editor_address.clone(),
-            self.state.server_editor_address_focused,
+            &self.state.server_list.server_editor_address().clone(),
+            self.state.server_list.server_editor_address_focused(),
         );
 
         let button_y = sh / 4.0 + 114.0 * gs;
         draw_button_enabled(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
             btn::SERVER_EDITOR_SAVE,
             [metrics.btn_x, button_y, metrics.btn_w, metrics.btn_h],
             text.get("addServer.add"),
-            !self.state.server_editor_name.trim().is_empty()
-                && !self.state.server_editor_address.trim().is_empty(),
+            !self.state.server_list.server_editor_name().trim().is_empty()
+                && !self.state.server_list.server_editor_address().trim().is_empty(),
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -561,7 +538,7 @@ impl Renderer {
 }
 
 fn draw_text_field(
-    renderer: &mut Renderer,
+    font: &mut crate::ui::font::FontRenderer,
     metrics: &MenuMetrics,
     widget_gui: &mut GuiVertexBuilder,
     font_gui: &mut GuiVertexBuilder,
@@ -600,7 +577,7 @@ fn draw_text_field(
         value.to_string()
     };
     font_gui.draw_text(
-        &mut renderer.font,
+        font,
         x + 4.0 * gs,
         y + 5.0 * gs,
         &display,

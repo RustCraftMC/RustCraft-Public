@@ -1,6 +1,28 @@
 use crate::audio::{self, AudioBackend};
 use crate::client::particles::ParticleSystem;
 
+/// Sound event names for world effect handling (S28). Extracted as `const` to
+/// avoid re-allocating the same `&'static str` on each packet and to make the
+/// mapping self-documenting.
+const SOUND_RANDOM_CLICK: &str = "random.click";
+const SOUND_RANDOM_BOW: &str = "random.bow";
+const SOUND_RANDOM_DOOR_OPEN: &str = "random.door_open";
+const SOUND_RANDOM_FIZZ: &str = "random.fizz";
+const SOUND_RANDOM_DOOR_CLOSE: &str = "random.door_close";
+const SOUND_MOB_GHAST_CHARGE: &str = "mob.ghast.charge";
+const SOUND_MOB_GHAST_FIREBALL: &str = "mob.ghast.fireball";
+const SOUND_MOB_ZOMBIE_WOOD: &str = "mob.zombie.wood";
+const SOUND_MOB_ZOMBIE_METAL: &str = "mob.zombie.metal";
+const SOUND_MOB_ZOMBIE_WOODBREAK: &str = "mob.zombie.woodbreak";
+const SOUND_MOB_WITHER_SHOOT: &str = "mob.wither.shoot";
+const SOUND_MOB_BAT_TAKEOFF: &str = "mob.bat.takeoff";
+const SOUND_MOB_ZOMBIE_INFECT: &str = "mob.zombie.infect";
+const SOUND_MOB_ZOMBIE_UNFECT: &str = "mob.zombie.unfect";
+const SOUND_RANDOM_ANVIL_BREAK: &str = "random.anvil_break";
+const SOUND_RANDOM_ANVIL_USE: &str = "random.anvil_use";
+const SOUND_RANDOM_ANVIL_LAND: &str = "random.anvil_land";
+const SOUND_MOB_GUARDIAN_CURSE: &str = "mob.guardian.curse";
+
 pub fn handle_world_effect(
     particles: &mut ParticleSystem,
     audio: &mut impl AudioBackend,
@@ -43,26 +65,26 @@ pub fn handle_world_effect(
             &[],
         ),
         // Sound effect IDs (1000-1022)
-        1000 => audio.play(sound_with("random.click", 1.0, 1.0, pos)),
-        1001 => audio.play(sound_with("random.click", 1.0, 1.2, pos)),
-        1002 => audio.play(sound_with("random.bow", 1.0, 1.2, pos)),
-        1003 => audio.play(sound_with("random.door_open", 1.0, 1.0, pos)),
-        1004 => audio.play(sound_with("random.fizz", 0.5, 2.6, pos)),
+        1000 => audio.play(sound_with(SOUND_RANDOM_CLICK, 1.0, 1.0, pos)),
+        1001 => audio.play(sound_with(SOUND_RANDOM_CLICK, 1.0, 1.2, pos)),
+        1002 => audio.play(sound_with(SOUND_RANDOM_BOW, 1.0, 1.2, pos)),
+        1003 => audio.play(sound_with(SOUND_RANDOM_DOOR_OPEN, 1.0, 1.0, pos)),
+        1004 => audio.play(sound_with(SOUND_RANDOM_FIZZ, 0.5, 2.6, pos)),
         // 1005 starts/stops a record and is handled by the music subsystem.
-        1006 => audio.play(sound_with("random.door_close", 1.0, 1.0, pos)),
-        1007 => audio.play(sound_with("mob.ghast.charge", 10.0, 1.0, pos)),
-        1008 => audio.play(sound_with("mob.ghast.fireball", 10.0, 1.0, pos)),
-        1009 => audio.play(sound_with("mob.ghast.fireball", 2.0, 1.0, pos)),
-        1010 => audio.play(sound_with("mob.zombie.wood", 2.0, 1.0, pos)),
-        1011 => audio.play(sound_with("mob.zombie.metal", 2.0, 1.0, pos)),
-        1012 => audio.play(sound_with("mob.zombie.woodbreak", 2.0, 1.0, pos)),
-        1014 => audio.play(sound_with("mob.wither.shoot", 2.0, 1.0, pos)),
-        1015 => audio.play(sound_with("mob.bat.takeoff", 0.05, 1.0, pos)),
-        1016 => audio.play(sound_with("mob.zombie.infect", 2.0, 1.0, pos)),
-        1017 => audio.play(sound_with("mob.zombie.unfect", 2.0, 1.0, pos)),
-        1020 => audio.play(sound_with("random.anvil_break", 1.0, 1.0, pos)),
-        1021 => audio.play(sound_with("random.anvil_use", 1.0, 1.0, pos)),
-        1022 => audio.play(sound_with("random.anvil_land", 0.3, 1.0, pos)),
+        1006 => audio.play(sound_with(SOUND_RANDOM_DOOR_CLOSE, 1.0, 1.0, pos)),
+        1007 => audio.play(sound_with(SOUND_MOB_GHAST_CHARGE, 10.0, 1.0, pos)),
+        1008 => audio.play(sound_with(SOUND_MOB_GHAST_FIREBALL, 10.0, 1.0, pos)),
+        1009 => audio.play(sound_with(SOUND_MOB_GHAST_FIREBALL, 2.0, 1.0, pos)),
+        1010 => audio.play(sound_with(SOUND_MOB_ZOMBIE_WOOD, 2.0, 1.0, pos)),
+        1011 => audio.play(sound_with(SOUND_MOB_ZOMBIE_METAL, 2.0, 1.0, pos)),
+        1012 => audio.play(sound_with(SOUND_MOB_ZOMBIE_WOODBREAK, 2.0, 1.0, pos)),
+        1014 => audio.play(sound_with(SOUND_MOB_WITHER_SHOOT, 2.0, 1.0, pos)),
+        1015 => audio.play(sound_with(SOUND_MOB_BAT_TAKEOFF, 0.05, 1.0, pos)),
+        1016 => audio.play(sound_with(SOUND_MOB_ZOMBIE_INFECT, 2.0, 1.0, pos)),
+        1017 => audio.play(sound_with(SOUND_MOB_ZOMBIE_UNFECT, 2.0, 1.0, pos)),
+        1020 => audio.play(sound_with(SOUND_RANDOM_ANVIL_BREAK, 1.0, 1.0, pos)),
+        1021 => audio.play(sound_with(SOUND_RANDOM_ANVIL_USE, 1.0, 1.0, pos)),
+        1022 => audio.play(sound_with(SOUND_RANDOM_ANVIL_LAND, 0.3, 1.0, pos)),
         // Smoke particles for extinguish fire
         1030 => {
             particles.spawn_from_server(
@@ -73,7 +95,7 @@ pub fn handle_world_effect(
                 12,
                 &[],
             );
-            audio.play(sound("random.fizz", audio::SoundCategory::Blocks, pos));
+            audio.play(sound(SOUND_RANDOM_FIZZ, audio::SoundCategory::Blocks, pos));
         }
         // Break ender eye
         1031 => {
@@ -90,7 +112,7 @@ pub fn handle_world_effect(
         1032 => {
             particles.spawn_mob_appearance(origin);
             audio.play(sound(
-                "mob.guardian.curse",
+                SOUND_MOB_GUARDIAN_CURSE,
                 audio::SoundCategory::Hostile,
                 pos,
             ));
@@ -143,115 +165,4 @@ fn sound_with(name: &str, volume: f32, pitch: f32, pos: [i32; 3]) -> audio::Soun
 
 fn block_dig_sound(block: crate::world::block::Block) -> &'static str {
     block.sound_type().dig_event()
-}
-
-#[allow(dead_code)]
-fn legacy_block_dig_sound(block: crate::world::block::Block) -> &'static str {
-    use crate::world::block::Block;
-    match block {
-        Block::Stone
-        | Block::Cobblestone
-        | Block::Bedrock
-        | Block::GoldOre
-        | Block::IronOre
-        | Block::CoalOre
-        | Block::LapisOre
-        | Block::DiamondOre
-        | Block::RedstoneOre
-        | Block::LitRedstoneOre
-        | Block::Obsidian
-        | Block::StoneBricks
-        | Block::Bricks
-        | Block::MossyCobblestone
-        | Block::Sandstone
-        | Block::DoubleStoneSlab
-        | Block::StoneSlab
-        | Block::StoneButton
-        | Block::StonePressurePlate
-        | Block::IronBlock
-        | Block::GoldBlock
-        | Block::DiamondBlock
-        | Block::LapisBlock
-        | Block::NetherBrick
-        | Block::Dispenser
-        | Block::Furnace
-        | Block::LitFurnace
-        | Block::MobSpawner
-        | Block::Cauldron
-        | Block::EnchantingTable
-        | Block::BrewingStand
-        | Block::IronBars
-        | Block::GlassPane
-        | Block::PoweredRail
-        | Block::DetectorRail
-        | Block::Rail
-        | Block::StandingSign
-        | Block::WallSign
-        | Block::MonsterEgg
-        | Block::NetherBrickFence
-        | Block::NetherBrickStairs
-        | Block::StoneBrickStairs
-        | Block::BrickStairs
-        | Block::CobblestoneStairs
-        | Block::IronDoor
-        | Block::Chest
-        | Block::StickyPiston
-        | Block::Piston
-        | Block::PistonHead
-        | Block::PistonExtension
-        | Block::SnowBlock
-        | Block::SnowLayer
-        | Block::PackedIce
-        | Block::Ice
-        | Block::Clay
-        | Block::QuartzOre => "dig.stone",
-
-        Block::Grass
-        | Block::Dirt
-        | Block::Farmland
-        | Block::Mycelium
-        | Block::SoulSand
-        | Block::TallGrass
-        | Block::DeadBush
-        | Block::HayBlock => "dig.grass",
-
-        Block::Planks
-        | Block::Log
-        | Block::Log2
-        | Block::Bookshelf
-        | Block::CraftingTable
-        | Block::OakDoor
-        | Block::Trapdoor
-        | Block::OakFence
-        | Block::OakStairs
-        | Block::WoodenPressurePlate
-        | Block::NoteBlock
-        | Block::Jukebox
-        | Block::Torch
-        | Block::UnlitRedstoneTorch
-        | Block::RedstoneTorch
-        | Block::Ladder
-        | Block::Lever
-        | Block::WoodenButton
-        | Block::SugarCane
-        | Block::Cactus
-        | Block::Cake
-        | Block::UnpoweredRepeater
-        | Block::PoweredRepeater
-        | Block::Pumpkin
-        | Block::JackOLantern
-        | Block::MelonBlock
-        | Block::Vine
-        | Block::LilyPad
-        | Block::BrownMushroom
-        | Block::RedMushroom
-        | Block::NetherWart => "dig.wood",
-
-        Block::Gravel => "dig.gravel",
-        Block::Sand => "dig.sand",
-        Block::Wool | Block::Cobweb => "dig.cloth",
-        Block::Glass | Block::Tnt => "dig.glass",
-
-        _ => "dig.stone",
-    }
 }

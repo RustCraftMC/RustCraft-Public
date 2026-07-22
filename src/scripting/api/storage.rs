@@ -689,7 +689,9 @@ fn convert_lua_table_inner(
         let mut object = serde_json::Map::with_capacity(entries.len());
         for (key, value) in entries {
             let Value::String(key) = key else {
-                unreachable!("only empty tables and string-keyed tables reach object conversion")
+                return Err(storage_runtime_error(
+                    "stored table keys must be strings for object conversion",
+                ));
             };
             let key = key.to_str()?;
             validate_json_member_key(&key).map_err(lua_storage_error)?;

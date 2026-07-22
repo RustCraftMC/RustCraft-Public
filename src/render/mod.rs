@@ -5,6 +5,8 @@
 //! - `pipeline` — Render pass, graphics pipeline, descriptors
 //! - `resources` — Buffers, textures, uniforms
 //! - `rendering` — Frame drawing, mesh upload, swapchain recreation
+//! - `swapchain` — Swapchain, depth buffer, framebuffer, and frame-sync management
+//! - `resource_manager` — GPU allocator, uniform buffers, buffer/image helpers
 
 pub(crate) mod custom_sky;
 pub mod entity;
@@ -16,13 +18,16 @@ pub(crate) mod item_icons;
 mod particle_mesh;
 mod particles;
 mod pipeline;
+pub(crate) mod raii;
 mod rendering;
 pub(crate) mod resources;
+mod resource_manager;
 mod runtime_world;
 mod screens;
 pub mod shader_pack;
 pub mod sky;
 pub mod state;
+mod swapchain;
 mod ui_hooks;
 pub mod upscaler;
 mod vulkan;
@@ -297,18 +302,13 @@ pub struct Renderer {
     device: ash::Device,
     _physical_device: vk::PhysicalDevice,
     queue: vk::Queue,
+    // Debug messenger — only present when the validation layer is enabled.
+    // `debug_messenger` is vk::DebugUtilsMessengerEXT::null() when disabled.
+    debug_utils: Option<ash::ext::debug_utils::Instance>,
+    debug_messenger: vk::DebugUtilsMessengerEXT,
 
-    // Surface
-    surface_fn: ash::khr::surface::Instance,
-    surface: vk::SurfaceKHR,
-
-    // Swapchain
-    swapchain_fn: ash::khr::swapchain::Device,
-    swapchain: vk::SwapchainKHR,
-    _swapchain_images: Vec<vk::Image>,
-    swapchain_image_views: Vec<vk::ImageView>,
-    _swapchain_format: vk::Format,
-    swapchain_extent: vk::Extent2D,
+    // Swapchain subsystem (surface, swapchain, depth, framebuffers, sync)
+    swapchain: swapchain::SwapchainManager,
 
     // Pipeline
     render_pass: vk::RenderPass,
@@ -491,26 +491,11 @@ pub struct Renderer {
     panorama_uniform_alloc: gpu_allocator::vulkan::Allocation,
 
     // Framebuffers & commands
-    framebuffers: Vec<vk::Framebuffer>,
     command_buffers: Vec<vk::CommandBuffer>,
     command_pool: vk::CommandPool,
 
-    // Sync
-    image_available: Vec<vk::Semaphore>,
-    render_finished: Vec<vk::Semaphore>,
-    in_flight_fences: Vec<vk::Fence>,
-    current_frame: usize,
-
-    // Depth
-    depth_images: Vec<vk::Image>,
-    depth_image_views: Vec<vk::ImageView>,
-    depth_format: vk::Format,
-    depth_allocs: Vec<gpu_allocator::vulkan::Allocation>,
-
-    // Uniforms
-    uniform_buffers: Vec<vk::Buffer>,
-    uniform_allocs: Vec<gpu_allocator::vulkan::Allocation>,
-    uniform_mapped: Vec<*mut std::ffi::c_void>,
+    // Resource subsystem (GPU allocator, uniform buffers)
+    resources: resource_manager::ResourceManager,
 
     // Texture
     texture_image: vk::Image,
@@ -567,11 +552,6 @@ pub struct Renderer {
     player_skin_atlas_generation: u64,
     entity_atlas_generation: u64,
 
-    // Allocator — wrapped in ManuallyDrop because its Drop would call
-    // vkDestroyDevice/vkDestroyInstance on internal ash clones before our
-    // own Device/Instance drops, causing a double-destroy / use-after-free
-    // that manifests as 0xc0000005 on exit.
-    allocator: std::mem::ManuallyDrop<gpu_allocator::vulkan::Allocator>,
 
     // GUI rendering
     gui_pipeline: vk::Pipeline,
@@ -648,9 +628,6 @@ pub struct Renderer {
     particles: Vec<ParticleSprite>,
     particle_list: Vec<crate::client::particles::Particle>,
 
-    // Window state
-    window_size: (u32, u32),
-    needs_recreate: bool,
     first_frame_done: std::cell::Cell<bool>,
 }
 
@@ -940,8 +917,8 @@ pub(crate) fn spirv_words(bytes: &[u8]) -> Vec<u32> {
 impl Renderer {
     /// Trigger the first-person hand swing animation (attack/use).
     pub fn trigger_hand_swing(&mut self) {
-        self.state.hand_swing_timer = 0.3;
-        self.state.hand_swing_progress = 0.0;
+        self.state.hud.set_hand_swing_timer(0.3);
+        self.state.hud.set_hand_swing_progress(0.0);
     }
 
     /// Reset equipped progress (item switch animation replay).
@@ -958,23 +935,23 @@ impl Renderer {
             .min(0.1);
         self.hand_animation_last_update = now;
 
-        if self.state.hand_swing_timer > 0.0 {
-            self.state.hand_swing_timer = (self.state.hand_swing_timer - dt).max(0.0);
-            self.state.hand_swing_progress = if self.state.hand_swing_timer > 0.0 {
-                1.0 - self.state.hand_swing_timer / 0.3
+        if self.state.hud.hand_swing_timer() > 0.0 {
+            self.state.hud.set_hand_swing_timer((self.state.hud.hand_swing_timer() - dt).max(0.0));
+            self.state.hud.set_hand_swing_progress(if self.state.hud.hand_swing_timer() > 0.0 {
+                1.0 - self.state.hud.hand_swing_timer() / 0.3
             } else {
                 0.0
-            };
+            });
         } else {
-            self.state.hand_swing_progress = 0.0;
+            self.state.hud.set_hand_swing_progress(0.0);
         }
 
         // Bow damage 1..3 selects pulling textures; it is not an ItemStack
         // change. Treating each pull frame as a new item keeps equip progress
         // near zero and sinks the bow to the bottom of the screen.
-        let same_item = self.state.hand_item_id == item_id
+        let same_item = self.state.hud.hand_item_id() == item_id
             && (item_id == crate::world::item::Item::Bow.to_id()
-                || self.state.hand_item_damage == item_damage);
+                || self.state.hud.hand_item_damage() == item_damage);
         let target = if same_item { 1.0 } else { 0.0 };
         let step = 8.0 * dt;
         if self.hand_equip_progress < target {
@@ -984,9 +961,9 @@ impl Renderer {
         }
 
         if !same_item && self.hand_equip_progress <= 0.1 {
-            self.state.hand_item_id = item_id;
-            self.state.hand_item_damage = item_damage;
-            self.state.hand_item_nbt = nbt;
+            self.state.hud.set_hand_item_id(item_id);
+            self.state.hud.set_hand_item_damage(item_damage);
+            self.state.hud.set_hand_item_nbt(nbt);
         }
     }
 
@@ -1009,16 +986,20 @@ impl Renderer {
 
         // Packed atlas dimensions can change with resource-pack resolution,
         // so replace the GPU image instead of writing into the old extent.
-        let (block_image, block_view, block_alloc, block_sampler) = resources::create_rgba_texture(
-            &self.device,
-            &mut self.allocator,
-            self.command_pool,
-            self.queue,
-            &block_atlas.pixels,
-            block_atlas.width,
-            block_atlas.height,
-            "texture",
-        );
+        let (block_image_raii, block_view_raii, block_alloc, block_sampler_raii) =
+            resources::create_rgba_texture(
+                &self.device,
+                self.resources.allocator_mut(),
+                self.command_pool,
+                self.queue,
+                &block_atlas.pixels,
+                block_atlas.width,
+                block_atlas.height,
+                "texture",
+            );
+        let block_image = block_image_raii.into_handle();
+        let block_view = block_view_raii.into_handle();
+        let block_sampler = block_sampler_raii.into_handle();
         unsafe {
             self.device
                 .destroy_image_view(self.texture_image_view, None);
@@ -1026,7 +1007,7 @@ impl Renderer {
             self.device.destroy_image(self.texture_image, None);
         }
         if let Some(allocation) = self.texture_alloc.take() {
-            self.allocator.free(allocation).ok();
+            self.resources.free(allocation);
         }
         self.texture_image = block_image;
         self.texture_image_view = block_view;
@@ -1041,7 +1022,7 @@ impl Renderer {
         // views and descriptor sets remain valid across a resource-pack reload.
         resources::reupload_gpu_image(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             self.command_pool,
             self.queue,
             self.gui_items_image,
@@ -1060,7 +1041,7 @@ impl Renderer {
                 self.device.destroy_image(self.entity_texture_image, None);
             }
             if let Some(a) = self.entity_texture_alloc.take() {
-                self.allocator.free(a).ok();
+                self.resources.free(a);
             }
             if self.entity_texture_sampler != vk::Sampler::null() {
                 unsafe {
@@ -1069,17 +1050,17 @@ impl Renderer {
                 }
             }
         }
-        let (e_img, e_view, e_alloc, e_sampler) = Self::create_entity_texture(
+        let (e_img_raii, e_view_raii, e_alloc, e_sampler_raii) = Self::create_entity_texture(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             self.command_pool,
             self.queue,
             &entity_atlas,
         );
-        self.entity_texture_image = e_img;
-        self.entity_texture_view = e_view;
+        self.entity_texture_image = e_img_raii.into_handle();
+        self.entity_texture_view = e_view_raii.into_handle();
         self.entity_texture_alloc = Some(e_alloc);
-        self.entity_texture_sampler = e_sampler;
+        self.entity_texture_sampler = e_sampler_raii.into_handle();
         self.entity_atlas = Some(entity_atlas);
         self.synced_player_skin_content_hash = None;
         self.player_skin_layout_hash = 0;
@@ -1092,7 +1073,7 @@ impl Renderer {
         Self::write_descriptors(
             &self.device,
             &self.descriptor_sets,
-            &self.uniform_buffers,
+            self.resources.uniform_buffers(),
             self.texture_image_view,
             self.texture_sampler,
         );
@@ -1100,14 +1081,14 @@ impl Renderer {
         Self::write_descriptors(
             &self.device,
             &self.entity_descriptor_sets,
-            &self.uniform_buffers,
+            self.resources.uniform_buffers(),
             self.entity_texture_view,
             self.entity_texture_sampler,
         );
         Self::write_descriptors(
             &self.device,
             &self.fp_item_descriptor_sets,
-            &self.uniform_buffers,
+            self.resources.uniform_buffers(),
             self.gui_items_view,
             self.gui_items_sampler,
         );

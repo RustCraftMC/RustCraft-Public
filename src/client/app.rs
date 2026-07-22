@@ -121,13 +121,37 @@ mod player_skin_profile_tests {
     }
 }
 
+/// Aggregates input-related state: key bindings, input state, gamepad,
+/// mouse position/delta, and capture state. Extracted from App to establish
+/// a clear subsystem boundary for the input layer.
+pub(crate) struct InputController {
+    pub keybinds: KeyBindings,
+    pub input: InputState,
+    pub gamepad: GamepadInput,
+    pub control_device: ControlDevice,
+    pub rebinding_action: Option<Action>,
+    pub mouse_dx: f64,
+    pub mouse_dy: f64,
+    pub mouse_x: f64,
+    pub mouse_y: f64,
+    pub mouse_captured: bool,
+}
+
+/// Aggregates network/connection state: the active connection, network
+/// protocol state, and background connection/refresh tasks. Extracted from
+/// App to establish a clear subsystem boundary for networking.
+pub(crate) struct NetworkController {
+    pub connection: Option<net::connection::Connection>,
+    pub network_state: client::network::ClientNetworkState,
+    pub connect_task: Option<tasks::ConnectTask>,
+    pub server_refresh_task: Option<tasks::ServerRefreshTask>,
+}
+
 pub struct App {
     renderer: Option<render::Renderer>,
     window: Option<Window>,
     player: client::player::Player,
-    keybinds: KeyBindings,
-    input: InputState,
-    gamepad: GamepadInput,
+    input_ctrl: InputController,
     inventory: Inventory,
     inventory_open: bool,
     player_list_open: bool,
@@ -138,9 +162,6 @@ pub struct App {
     chat_draft: Option<String>,
     book_editor: Option<client::book::BookEditor>,
     ctrl_held: bool,
-    rebinding_action: Option<Action>,
-    control_device: ControlDevice,
-    mouse_captured: bool,
     attack_held: bool,
     use_held: bool,
     /// Right-click press events accumulated since the previous fixed tick.
@@ -188,8 +209,7 @@ pub struct App {
     ladder_sound_cooldown: u8,
     dig: DigController,
     inventory_action_number: i16,
-    connection: Option<net::connection::Connection>,
-    network_state: client::network::ClientNetworkState,
+    net_ctrl: NetworkController,
     audio: audio::AudioBackendImpl,
     particles: client::particles::ParticleSystem,
     local_player_model: client::player_model::PlayerModel,
@@ -199,8 +219,6 @@ pub struct App {
     local_cape_hash: u64,
     skin_cache: client::skin_cache::SkinCache,
     servers: client::server_list::ServerList,
-    server_refresh_task: Option<tasks::ServerRefreshTask>,
-    connect_task: Option<tasks::ConnectTask>,
     auth_task: Option<tasks::AuthTask>,
     account: Option<crate::auth::models::Account>,
     accounts: Vec<crate::auth::models::Account>,
@@ -239,10 +257,6 @@ pub struct App {
     pending_chunk_uploads: fnv::FnvHashMap<(i32, i32), world::mesh::ChunkMesh>,
     state: GameState,
     ui: ui::UiState,
-    mouse_dx: f64,
-    mouse_dy: f64,
-    mouse_x: f64,
-    mouse_y: f64,
     /// The option slider currently held by the left mouse button.
     active_slider: Option<u32>,
     /// Whether the vanilla creative-inventory scrollbar is being dragged.
@@ -389,9 +403,18 @@ impl App {
                 nalgebra::Point3::new(8.0, spawn_y, 25.0),
                 1280.0 / 720.0,
             ),
-            keybinds: config.keybinds.clone(),
-            input: InputState::new(),
-            gamepad: GamepadInput::new(),
+            input_ctrl: InputController {
+                keybinds: config.keybinds.clone(),
+                input: InputState::new(),
+                gamepad: GamepadInput::new(),
+                control_device: ControlDevice::KeyboardMouse,
+                rebinding_action: None,
+                mouse_dx: 0.0,
+                mouse_dy: 0.0,
+                mouse_x: 0.0,
+                mouse_y: 0.0,
+                mouse_captured: false,
+            },
             inventory: Inventory::creative(),
             inventory_open: false,
             player_list_open: false,
@@ -402,9 +425,6 @@ impl App {
             chat_draft: None,
             book_editor: None,
             ctrl_held: false,
-            rebinding_action: None,
-            control_device: ControlDevice::KeyboardMouse,
-            mouse_captured: false,
             attack_held: false,
             use_held: false,
             use_presses_pending: 0,
@@ -426,8 +446,12 @@ impl App {
             ladder_sound_cooldown: 0,
             dig: DigController::new(),
             inventory_action_number: 1,
-            connection: None,
-            network_state: client::network::ClientNetworkState::new(),
+            net_ctrl: NetworkController {
+                connection: None,
+                network_state: client::network::ClientNetworkState::new(),
+                connect_task: None,
+                server_refresh_task: None,
+            },
             audio,
             particles: client::particles::ParticleSystem::new(4096),
             local_player_model,
@@ -437,8 +461,6 @@ impl App {
             local_cape_hash,
             skin_cache,
             servers: client::server_list::ServerList::load_default(),
-            server_refresh_task: None,
-            connect_task: None,
             auth_task: None,
             account,
             accounts,
@@ -451,7 +473,11 @@ impl App {
             offline_username_input: String::new(),
             entering_offline_name: false,
             session: client::session::SessionState::new(),
-            entities: crate::entity::EntityManager::new(),
+            entities: {
+                let mut em = crate::entity::EntityManager::new();
+                em.spawn_local_player_marker();
+                em
+            },
             scripts,
             selected_server: 0,
             // A direct-connect address is transient UI state, not a game setting.
@@ -480,10 +506,6 @@ impl App {
             pending_chunk_uploads: fnv::FnvHashMap::default(),
             state: GameState::MainMenu,
             ui: ui::UiState::new(&config.language),
-            mouse_dx: 0.0,
-            mouse_dy: 0.0,
-            mouse_x: 0.0,
-            mouse_y: 0.0,
             active_slider: None,
             creative_scroll_dragging: false,
             gamepad_inventory_drag: None,
@@ -778,8 +800,8 @@ impl ApplicationHandler for App {
         );
         log::debug!("Vulkan renderer created; initialising GUI resources");
         renderer.init_gui(&mut sky_resolver);
-        renderer.state.gui_scale = self.config.gui_scale.max(1).min(4);
-        renderer.state.selected_shader_pack = self.config.shader_pack.clone();
+        renderer.state.settings.set_gui_scale(self.config.gui_scale.max(1).min(4));
+        renderer.state.server_list.set_selected_shader_pack(self.config.shader_pack.clone());
         renderer.load_custom_sky_from_packs(&mut sky_resolver, 0);
         self.renderer = Some(renderer);
         self.window = Some(window);
@@ -802,7 +824,7 @@ impl ApplicationHandler for App {
                 // are destroyed while the window handle is still valid.
                 self.renderer = None;
                 // Also drop the network connection so the server is notified.
-                self.connection = None;
+                self.net_ctrl.connection = None;
                 self.scripts.set_connection_active(false);
                 self.scripts.shutdown();
                 event_loop.exit();
@@ -810,12 +832,12 @@ impl ApplicationHandler for App {
             WindowEvent::Focused(false) => {
                 // Auto-pause when window loses focus while in-game (not in a menu)
                 if matches!(self.state, GameState::Playing)
-                    && self.mouse_captured
+                    && self.input_ctrl.mouse_captured
                     && !self.chat_open
                     && !self.inventory_open
                 {
                     self.state = GameState::Paused;
-                    self.mouse_captured = false;
+                    self.input_ctrl.mouse_captured = false;
                     self.set_cursor_captured(false);
                 }
             }
@@ -826,8 +848,8 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.mouse_x = position.x;
-                self.mouse_y = position.y;
+                self.input_ctrl.mouse_x = position.x;
+                self.input_ctrl.mouse_y = position.y;
                 if let Some(renderer) = &mut self.renderer {
                     renderer.set_gui_mouse_pos(position.x as f32, position.y as f32);
                 }
@@ -863,10 +885,10 @@ impl ApplicationHandler for App {
         _device_id: DeviceId,
         event: DeviceEvent,
     ) {
-        if self.mouse_captured && matches!(self.state, GameState::Playing) {
+        if self.input_ctrl.mouse_captured && matches!(self.state, GameState::Playing) {
             if let DeviceEvent::MouseMotion { delta } = event {
-                self.mouse_dx += delta.0;
-                self.mouse_dy += delta.1;
+                self.input_ctrl.mouse_dx += delta.0;
+                self.input_ctrl.mouse_dy += delta.1;
             }
         }
     }

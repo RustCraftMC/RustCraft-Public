@@ -42,11 +42,8 @@ pub(super) struct ScriptVisualOverrides {
 enum ScriptWorldBlockUpdate {
     Replace,
     Reuse,
-    Patch {
-        changed_blocks: HashSet<(i32, i32, i32)>,
-    },
-    Shift {
-        previous_center: (i32, i32, i32),
+    Partial {
+        previous_center: Option<(i32, i32, i32)>,
         changed_blocks: HashSet<(i32, i32, i32)>,
     },
 }
@@ -61,9 +58,9 @@ impl App {
     ) {
         let client = self.script_client_snapshot(frame_delta_seconds);
         let input = InputSnapshot::from_input_state(
-            &self.input,
-            (self.mouse_dx, self.mouse_dy),
-            self.mouse_captured,
+            &self.input_ctrl.input,
+            (self.input_ctrl.mouse_dx, self.input_ctrl.mouse_dy),
+            self.input_ctrl.mouse_captured,
         );
         let ui = self.script_ui_snapshot();
         let world_update = if include_world {
@@ -88,15 +85,8 @@ impl App {
                         self.last_script_world_block_key = None;
                     }
                 }
-                Some((snapshot, key, ScriptWorldBlockUpdate::Patch { .. })) => {
-                    if self.scripts.update_world_snapshot_patching_blocks(snapshot) {
-                        self.last_script_world_block_key = Some(key);
-                    } else {
-                        self.last_script_world_block_key = None;
-                    }
-                }
-                Some((snapshot, key, ScriptWorldBlockUpdate::Shift { .. })) => {
-                    if self.scripts.update_world_snapshot_shifting_blocks(snapshot) {
+                Some((snapshot, key, ScriptWorldBlockUpdate::Partial { .. })) => {
+                    if self.scripts.update_world_snapshot_merging_blocks(snapshot) {
                         self.last_script_world_block_key = Some(key);
                     } else {
                         self.last_script_world_block_key = None;
@@ -204,8 +194,8 @@ impl App {
         let hud_visible = !self.hud_hidden && self.script_effective_hud_visible();
         let crosshair_visible = !self.hud_hidden && self.script_effective_crosshair_visible();
         if let Some(renderer) = &mut self.renderer {
-            renderer.state.hud_visible = hud_visible;
-            renderer.state.crosshair_visible = crosshair_visible;
+            renderer.state.settings.set_hud_visible(hud_visible);
+            renderer.state.settings.set_crosshair_visible(crosshair_visible);
         }
 
         // Window title is fixed globally to match app branding/version.
@@ -222,16 +212,16 @@ impl App {
     ) -> bool {
         self.scripts
             .update_input_snapshot(InputSnapshot::from_input_state(
-                &self.input,
-                (self.mouse_dx, self.mouse_dy),
-                self.mouse_captured,
+                &self.input_ctrl.input,
+                (self.input_ctrl.mouse_dx, self.input_ctrl.mouse_dy),
+                self.input_ctrl.mouse_captured,
             ));
         let outcome = self.scripts.dispatch_json(
             "input.action",
             serde_json::json!({
                 "action": canonical_action_name(action),
                 "edge": edge.as_str(),
-                "held": self.input.is_held(action),
+                "held": self.input_ctrl.input.is_held(action),
                 "repeat": repeat,
             }),
         );
@@ -301,7 +291,7 @@ impl App {
     }
 
     fn has_script_player(&self) -> bool {
-        self.connection.is_some() && self.session.entity_id.is_some()
+        self.net_ctrl.connection.is_some() && self.session.entity_id.is_some()
     }
 
     fn script_client_snapshot(&self, frame_delta_seconds: f32) -> ClientSnapshot {
@@ -326,9 +316,9 @@ impl App {
     }
 
     fn script_connection_snapshot(&self) -> ConnectionSnapshot {
-        let state = if self.connect_task.is_some() {
+        let state = if self.net_ctrl.connect_task.is_some() {
             "connecting"
-        } else if let Some(connection) = &self.connection {
+        } else if let Some(connection) = &self.net_ctrl.connection {
             match connection.state {
                 crate::net::packet::ProtocolState::Play => "play",
                 crate::net::packet::ProtocolState::Login
@@ -359,10 +349,10 @@ impl App {
         let use_action = using_item.then(|| item_use_action(selected.item_id).to_owned());
         let blocking = using_item && super::block_interaction::is_sword(selected.item_id);
         let (swing_progress, swinging) = self.renderer.as_ref().map_or((0.0, false), |renderer| {
-            let progress = renderer.state.hand_swing_progress;
+            let progress = renderer.state.hud.hand_swing_progress();
             (
                 progress,
-                renderer.state.hand_swing_timer > 0.0 || progress > 0.0,
+                renderer.state.hud.hand_swing_timer() > 0.0 || progress > 0.0,
             )
         });
         Some(PlayerSnapshot {
@@ -462,14 +452,15 @@ impl App {
             Some(_) if !self.scripts.has_world_snapshot() => ScriptWorldBlockUpdate::Replace,
             Some(_) if changes.all || local_chunk_dirty => ScriptWorldBlockUpdate::Replace,
             Some((previous_center, _)) if *previous_center != center => {
-                ScriptWorldBlockUpdate::Shift {
-                    previous_center: *previous_center,
+                ScriptWorldBlockUpdate::Partial {
+                    previous_center: Some(*previous_center),
                     changed_blocks,
                 }
             }
-            Some(_) if !changed_blocks.is_empty() => {
-                ScriptWorldBlockUpdate::Patch { changed_blocks }
-            }
+            Some(_) if !changed_blocks.is_empty() => ScriptWorldBlockUpdate::Partial {
+                previous_center: None,
+                changed_blocks,
+            },
             Some((_, previous_revision)) if previous_revision == &key.1 || had_tracked_changes => {
                 ScriptWorldBlockUpdate::Reuse
             }
@@ -491,9 +482,9 @@ impl App {
 
         let entities = self
             .entities
-            .entities
-            .values()
-            .map(|entity| {
+            .iter()
+            .into_iter()
+            .map(|(_id, entity)| {
                 let (name, health, max_health) = match &entity.data {
                     EntityData::Player { name, .. } => (Some(name.clone()), None, None),
                     EntityData::Mob { health, max_health }
@@ -556,7 +547,11 @@ impl App {
             return BTreeMap::new();
         }
 
-        if let ScriptWorldBlockUpdate::Patch { changed_blocks } = block_update {
+        if let ScriptWorldBlockUpdate::Partial {
+            previous_center: None,
+            changed_blocks,
+        } = block_update
+        {
             let mut blocks = BTreeMap::new();
             for &(x, y, z) in changed_blocks {
                 if let Some(block) = self.script_block_snapshot_at(x, y, z) {
@@ -568,15 +563,19 @@ impl App {
 
         let ((min_x, min_y, min_z), (max_x, max_y, max_z)) = script_world_block_bounds(center);
         let previous_bounds = match block_update {
-            ScriptWorldBlockUpdate::Shift {
-                previous_center, ..
+            ScriptWorldBlockUpdate::Partial {
+                previous_center: Some(previous_center),
+                ..
             } => Some(script_world_block_bounds(*previous_center)),
             ScriptWorldBlockUpdate::Replace
             | ScriptWorldBlockUpdate::Reuse
-            | ScriptWorldBlockUpdate::Patch { .. } => None,
+            | ScriptWorldBlockUpdate::Partial {
+                previous_center: None,
+                ..
+            } => None,
         };
         let changed_blocks = match block_update {
-            ScriptWorldBlockUpdate::Shift { changed_blocks, .. } => Some(changed_blocks),
+            ScriptWorldBlockUpdate::Partial { changed_blocks, .. } => Some(changed_blocks),
             _ => None,
         };
         let radius = MAX_BLOCK_QUERY_RADIUS;
@@ -659,7 +658,7 @@ impl App {
         let debug_visible = self
             .renderer
             .as_ref()
-            .is_some_and(|renderer| renderer.state.debug_overlay);
+            .is_some_and(|renderer| renderer.state.settings.debug_overlay());
         UiSnapshot {
             screen: UiScreenSnapshot {
                 id: screen_id,

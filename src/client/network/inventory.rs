@@ -1,6 +1,7 @@
 use crate::client::inventory::Inventory;
 use crate::client::session::SessionState;
 use crate::net;
+use std::borrow::Cow;
 
 pub(super) fn handle_packet(
     connection: &mut net::connection::Connection,
@@ -25,12 +26,18 @@ pub(super) fn handle_packet(
         } => {
             let title = plain_json_text(&title_json, i18n);
             inventory.set_open_window(window_id, window_type, title, slot_count as usize);
+            // Format the integers once into owned buffers, then run the two
+            // template substitutions. Using `Cow::Owned` keeps the hot path
+            // (no window open) allocation-free while still producing a `&str`
+            // for `str::replace`.
+            let id_str: Cow<'_, str> = Cow::Owned(window_id.to_string());
+            let slot_str: Cow<'_, str> = Cow::Owned(slot_count.to_string());
             session.push_system_line(
                 session
                     .text
                     .opened_window
-                    .replace("%1$s", &window_id.to_string())
-                    .replace("%2$s", &slot_count.to_string()),
+                    .replace("%1$s", &id_str)
+                    .replace("%2$s", &slot_str),
             );
         }
         net::packet::ClientboundPacket::CloseWindow { window_id } => {

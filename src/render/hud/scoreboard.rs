@@ -8,17 +8,17 @@ impl Renderer {
         metrics: &MenuMetrics,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        if self.state.title_alpha <= 0.01
-            || (self.state.title_text.is_none() && self.state.subtitle_text.is_none())
+        if self.state.hud.title_alpha() <= 0.01
+            || (self.state.hud.title_text().is_none() && self.state.hud.subtitle_text().is_none())
         {
             return;
         }
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
-        let alpha = self.state.title_alpha.clamp(0.0, 1.0);
+        let alpha = self.state.hud.title_alpha().clamp(0.0, 1.0);
 
-        if let Some(title) = self.state.title_text.clone() {
+        if let Some(title) = self.state.hud.title_text().clone() {
             font_gui.draw_text_shadowed(
                 &mut self.font,
                 sw / 2.0,
@@ -29,7 +29,7 @@ impl Renderer {
                 gs * 1.6,
             );
         }
-        if let Some(subtitle) = self.state.subtitle_text.clone() {
+        if let Some(subtitle) = self.state.hud.subtitle_text().clone() {
             font_gui.draw_text_shadowed(
                 &mut self.font,
                 sw / 2.0,
@@ -48,19 +48,19 @@ impl Renderer {
         metrics: &MenuMetrics,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        if self.state.sidebar_lines.is_empty() || self.state.chat_open || self.state.inventory_open
+        if self.state.hud.sidebar_lines().is_empty() || self.state.hud.chat_open() || self.state.inventory.inventory_open()
         {
             return;
         }
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let font_h = 10.0 * metrics.gs;
         let font_sz = metrics.font_sz * 0.72;
-        let title = self.state.sidebar_title.clone().unwrap_or_default();
+        let title = self.state.hud.sidebar_title().clone().unwrap_or_default();
 
         // MCP: max width = max(titleWidth, max("name: score" widths))
         let mut max_w = self.font.text_width(&title, font_sz);
-        for line in &self.state.sidebar_lines {
+        for line in self.state.hud.sidebar_lines() {
             let label = format!("{}: {}", line.display, line.score);
             max_w = max_w.max(self.font.text_width(&label, font_sz));
         }
@@ -72,14 +72,14 @@ impl Renderer {
         let right_bg_edge = (l1 + max_w + 2.0 * metrics.gs).min(sw - margin);
 
         // MCP: vertical baseline = screenHeight/2 + totalScoreHeight/3
-        let total_height = self.state.sidebar_lines.len() as f32 * font_h;
+        let total_height = self.state.hud.sidebar_lines().len() as f32 * font_h;
         let base_y = sh * 0.5 + total_height / 3.0;
 
         // sidebar_lines is sorted from highest to lowest score. Pixel y grows
         // downward, so the first (highest) entry needs the largest row index
         // to appear at the top, like vanilla GuiIngame.renderScoreboard.
-        for (j, line) in self.state.sidebar_lines.iter().enumerate() {
-            let row_y = base_y - (self.state.sidebar_lines.len().saturating_sub(j) as f32) * font_h;
+        for (j, line) in self.state.hud.sidebar_lines().iter().enumerate() {
+            let row_y = base_y - (self.state.hud.sidebar_lines().len().saturating_sub(j) as f32) * font_h;
 
             font_gui.fill_rect(
                 l1 - 2.0 * metrics.gs,

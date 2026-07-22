@@ -10,7 +10,7 @@ impl App {
             self.close_inventory_screen(true);
         } else {
             self.inventory_open = true;
-            self.mouse_captured = false;
+            self.input_ctrl.mouse_captured = false;
             self.set_cursor_captured(false);
         }
     }
@@ -22,13 +22,13 @@ impl App {
         self.gamepad_inventory_drag = None;
         self.inventory.had_server_window = false;
         self.inventory.cursor = crate::client::inventory::ItemStack::EMPTY;
-        client::network::send_close_window(&self.connection, self.inventory.open_window_id);
+        client::network::send_close_window(&self.net_ctrl.connection, self.inventory.open_window_id);
         if let Some(position) = open_chest_position {
             self.world.close_chest_for_local_viewer(position);
         }
         self.inventory.close_window(self.inventory.open_window_id);
         if recapture && matches!(self.state, crate::client::state::GameState::Playing) {
-            self.mouse_captured = true;
+            self.input_ctrl.mouse_captured = true;
             self.set_cursor_captured(true);
         }
     }
@@ -59,7 +59,7 @@ impl App {
             self.gamepad_inventory_drag = Some((button, slots));
             return;
         }
-        if slots.len() < 2 || self.connection.is_none() {
+        if slots.len() < 2 || self.net_ctrl.connection.is_none() {
             self.handle_inventory_click(button);
             return;
         }
@@ -91,7 +91,7 @@ impl App {
         let slot = self
             .renderer
             .as_ref()
-            .and_then(|renderer| renderer.gui_hit_test(self.mouse_x as f32, self.mouse_y as f32))
+            .and_then(|renderer| renderer.gui_hit_test(self.input_ctrl.mouse_x as f32, self.input_ctrl.mouse_y as f32))
             .and_then(|id| {
                 id.checked_sub(crate::ui::button_ids::INVENTORY_SLOT_BASE)
                     .filter(|slot| *slot < crate::ui::button_ids::INVENTORY_SLOT_MAX as u32)
@@ -106,16 +106,16 @@ impl App {
         let hit = self
             .renderer
             .as_ref()
-            .and_then(|r| r.gui_hit_test(self.mouse_x as f32, self.mouse_y as f32));
+            .and_then(|r| r.gui_hit_test(self.input_ctrl.mouse_x as f32, self.input_ctrl.mouse_y as f32));
         let right_click = button == MouseButton::Right;
-        let shift_click = self.input.is_held(Action::Sneak);
+        let shift_click = self.input_ctrl.input.is_held(Action::Sneak);
         let Some(id) = hit else {
             // Click outside any slot
             let is_inventory_tab = self
                 .renderer
                 .as_ref()
-                .map_or(false, |r| r.state.creative_tab == 11);
-            if self.connection.is_some()
+                .map_or(false, |r| r.state.inventory.creative_tab() == 11);
+            if self.net_ctrl.connection.is_some()
                 && self.session.gamemode == 1
                 && self.inventory.open_window_id == 0
                 && is_inventory_tab
@@ -127,12 +127,12 @@ impl App {
                 if right_click {
                     let single = crate::client::inventory::ItemStack { count: 1, ..stack };
                     self.inventory.click_outside(true);
-                    client::network::send_creative_inventory_action(&self.connection, -1, &single);
+                    client::network::send_creative_inventory_action(&self.net_ctrl.connection, -1, &single);
                 } else {
                     self.inventory.click_outside(false);
-                    client::network::send_creative_inventory_action(&self.connection, -1, &stack);
+                    client::network::send_creative_inventory_action(&self.net_ctrl.connection, -1, &stack);
                 }
-            } else if self.connection.is_some() {
+            } else if self.net_ctrl.connection.is_some() {
                 self.inventory.click_outside(right_click);
                 self.send_inventory_click(
                     -999,
@@ -167,10 +167,10 @@ impl App {
         {
             let tab = (id - crate::ui::button_ids::CREATIVE_TAB_BASE) as usize;
             if let Some(renderer) = &mut self.renderer {
-                renderer.state.creative_tab = tab;
-                renderer.state.creative_scroll = 0.0;
+                renderer.state.inventory.set_creative_tab(tab);
+                renderer.state.inventory.set_creative_scroll(0.0);
                 if tab == crate::render::hud::inventory::CREATIVE_TAB_SEARCH {
-                    renderer.state.creative_search.clear();
+                    renderer.state.inventory.creative_search_mut().clear();
                 }
             }
             self.audio.play(crate::audio::SoundEvent {
@@ -188,9 +188,9 @@ impl App {
                 < crate::ui::button_ids::ENCHANT_OPTION_BASE
                     + crate::ui::button_ids::ENCHANT_OPTION_MAX as u32
         {
-            if self.connection.is_some() && self.inventory.open_window_id != 0 {
+            if self.net_ctrl.connection.is_some() && self.inventory.open_window_id != 0 {
                 client::network::send_enchant_item(
-                    &self.connection,
+                    &self.net_ctrl.connection,
                     self.inventory.open_window_id,
                     (id - crate::ui::button_ids::ENCHANT_OPTION_BASE) as u8,
                 );
@@ -206,14 +206,14 @@ impl App {
         }
 
         let protocol_slot = slot_id as i16;
-        if self.connection.is_some()
+        if self.net_ctrl.connection.is_some()
             && self.session.gamemode == 1
             && self.inventory.open_window_id == 0
         {
             self.handle_creative_player_slot_click(protocol_slot, right_click);
             return;
         }
-        if self.connection.is_some() {
+        if self.net_ctrl.connection.is_some() {
             let before = self.inventory.item_view_for_protocol_slot(protocol_slot);
             let mut handled = true;
             if shift_click {
@@ -271,7 +271,7 @@ impl App {
         let hit = self
             .renderer
             .as_ref()
-            .and_then(|r| r.gui_hit_test(self.mouse_x as f32, self.mouse_y as f32));
+            .and_then(|r| r.gui_hit_test(self.input_ctrl.mouse_x as f32, self.input_ctrl.mouse_y as f32));
         let creative_slot = hit.and_then(creative_slot_id);
         let protocol_slot = hit.and_then(|id| {
             if id < crate::ui::button_ids::INVENTORY_SLOT_BASE {
@@ -282,19 +282,19 @@ impl App {
         });
 
         let protocol_slot = protocol_slot.unwrap_or(-999);
-        if self.connection.is_some()
+        if self.net_ctrl.connection.is_some()
             && self.session.gamemode == 1
             && self.inventory.open_window_id == 0
         {
             let is_inventory_tab = self
                 .renderer
                 .as_ref()
-                .map_or(false, |r| r.state.creative_tab == 11);
+                .map_or(false, |r| r.state.inventory.creative_tab() == 11);
             if let Some(slot) = creative_slot {
                 if !is_inventory_tab {
                     if let Some(stack) = self.creative_grid_stack(slot, drop_stack) {
                         client::network::send_creative_inventory_action(
-                            &self.connection,
+                            &self.net_ctrl.connection,
                             -1,
                             &stack,
                         );
@@ -315,7 +315,7 @@ impl App {
                         }
                     };
                     client::network::send_creative_inventory_action(
-                        &self.connection,
+                        &self.net_ctrl.connection,
                         -1,
                         &send_stack,
                     );
@@ -324,7 +324,7 @@ impl App {
                     let stack = self.inventory.item_for_protocol_slot(protocol_slot);
                     if protocol_slot >= 1 {
                         client::network::send_creative_inventory_action(
-                            &self.connection,
+                            &self.net_ctrl.connection,
                             protocol_slot,
                             &stack,
                         );
@@ -341,7 +341,7 @@ impl App {
                     ..stack
                 };
                 client::network::send_creative_inventory_action(
-                    &self.connection,
+                    &self.net_ctrl.connection,
                     if protocol_slot == -999 {
                         -1
                     } else {
@@ -350,7 +350,7 @@ impl App {
                     if drop_stack { &stack } else { &single },
                 );
             }
-        } else if self.connection.is_some() {
+        } else if self.net_ctrl.connection.is_some() {
             self.inventory.drop_protocol_slot(protocol_slot, drop_stack);
             self.send_inventory_click(
                 protocol_slot,
@@ -387,7 +387,7 @@ impl App {
         let after = self.inventory.item_for_protocol_slot(protocol_slot);
         if before != after && matches!(protocol_slot, 5..=44) {
             client::network::send_creative_inventory_action(
-                &self.connection,
+                &self.net_ctrl.connection,
                 protocol_slot,
                 &after,
             );
@@ -400,14 +400,14 @@ impl App {
         full_stack: bool,
     ) -> Option<crate::client::inventory::ItemStack> {
         let renderer = self.renderer.as_ref()?;
-        if renderer.state.creative_tab == crate::render::hud::inventory::CREATIVE_TAB_INVENTORY {
+        if renderer.state.inventory.creative_tab() == crate::render::hud::inventory::CREATIVE_TAB_INVENTORY {
             return None;
         }
         let items = renderer.creative_visible_entries();
         let cols = 9usize;
         let max_scroll_rows = crate::render::hud::inventory::creative_max_scroll_rows(items.len());
         let scroll_start =
-            (renderer.state.creative_scroll * max_scroll_rows as f32).round() as usize * cols;
+            (renderer.state.inventory.creative_scroll() * max_scroll_rows as f32).round() as usize * cols;
         let item = *items.get(scroll_start + slot)?;
         let mut stack = crate::client::inventory::ItemStack::new(item.item_id, 1);
         stack.damage = item.damage;
@@ -424,12 +424,13 @@ impl App {
         mode: u8,
         clicked: crate::client::inventory::ItemStackView,
     ) {
-        if self.connection.is_none() {
+        if self.net_ctrl.connection.is_none() {
             return;
         }
 
         let action = self.inventory_action_number;
-        self.inventory_action_number = self.inventory_action_number.wrapping_add(1).max(1);
+        // Vanilla Short sequence number; wrap through the full i16 range (do not clamp to 1).
+        self.inventory_action_number = self.inventory_action_number.wrapping_add(1);
         self.pending_click_windows
             .push(crate::net::packet::write_click_window(
                 self.inventory.open_window_id,

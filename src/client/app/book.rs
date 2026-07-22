@@ -13,7 +13,7 @@ impl App {
         // Vanilla sends the use-item packet before opening GuiScreenBook.
         self.send_item_use_packet();
         self.book_editor = Some(BookEditor::from_nbt(selected, held.nbt.as_deref()));
-        self.mouse_captured = false;
+        self.input_ctrl.mouse_captured = false;
         self.set_cursor_captured(false);
         if let Some(window) = &self.window {
             window.set_ime_allowed(true);
@@ -66,7 +66,7 @@ impl App {
         let hit = self
             .renderer
             .as_ref()
-            .and_then(|renderer| renderer.gui_hit_test(self.mouse_x as f32, self.mouse_y as f32));
+            .and_then(|renderer| renderer.gui_hit_test(self.input_ctrl.mouse_x as f32, self.input_ctrl.mouse_y as f32));
         let Some(id) = hit else {
             return;
         };
@@ -88,7 +88,7 @@ impl App {
 
     fn close_book_editor(&mut self) {
         self.book_editor = None;
-        self.mouse_captured = true;
+        self.input_ctrl.mouse_captured = true;
         self.set_cursor_captured(true);
         if let Some(window) = &self.window {
             window.set_ime_allowed(false);
@@ -112,9 +112,9 @@ impl App {
             }
             let stack = self.inventory.slots[slot]
                 .to_protocol_slot_with_meta(Some(&self.inventory.slot_meta[slot]));
-            client::network::send_book_update(&self.connection, signed, &stack);
+            client::network::send_book_update(&self.net_ctrl.connection, signed, &stack);
         }
-        self.mouse_captured = true;
+        self.input_ctrl.mouse_captured = true;
         self.set_cursor_captured(true);
         if let Some(window) = &self.window {
             window.set_ime_allowed(false);

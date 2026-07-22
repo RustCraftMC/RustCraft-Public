@@ -21,7 +21,7 @@ impl AuthTask {
     }
 }
 
-pub(super) struct ServerRefreshTask {
+pub(crate) struct ServerRefreshTask {
     rx: Receiver<client::server_list::ServerList>,
 }
 
@@ -40,12 +40,12 @@ impl ServerRefreshTask {
     }
 }
 
-pub(super) struct ConnectTask {
+pub(crate) struct ConnectTask {
     rx: Receiver<ConnectResult>,
-    pub(super) address: String,
+    pub(crate) address: String,
 }
 
-pub(super) type ConnectResult = Result<net::connection::Connection, String>;
+pub(crate) type ConnectResult = Result<net::connection::Connection, String>;
 
 impl ConnectTask {
     pub(super) fn spawn(

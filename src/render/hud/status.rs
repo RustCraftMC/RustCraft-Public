@@ -11,7 +11,7 @@ impl Renderer {
         sh: f32,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        if self.state.chat_open || self.state.inventory_open {
+        if self.state.hud.chat_open() || self.state.inventory.inventory_open() {
             return;
         }
         let cx = sw / 2.0;
@@ -31,8 +31,8 @@ impl Renderer {
         item_gui: &mut GuiVertexBuilder,
         icons_gui: &mut GuiVertexBuilder,
     ) {
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
         let font_sz = metrics.font_sz;
         let slot_size = 16.0 * gs;
@@ -41,13 +41,13 @@ impl Renderer {
         let hotbar_y = sh - 22.0 * gs - 4.0 * gs;
 
         widget_gui.draw_hotbar_bg(hotbar_x, hotbar_y, hotbar_w, 22.0 * gs);
-        let sel_x = hotbar_x + self.state.hotbar_selected as f32 * 20.0 * gs;
+        let sel_x = hotbar_x + self.state.inventory.hotbar_selected() as f32 * 20.0 * gs;
         widget_gui.draw_hotbar_select(sel_x - 1.0 * gs, hotbar_y - 1.0 * gs, 24.0 * gs, 24.0 * gs);
 
         for i in 0..9 {
             let sx = hotbar_x + 3.0 * gs + i as f32 * 20.0 * gs + 2.0 * gs;
             let sy = hotbar_y + 3.0 * gs;
-            let (item_id, count, damage) = self.state.hotbar_slots[i];
+            let (item_id, count, damage) = self.state.inventory.hotbar_slots_mut()[i];
             if count == 0 {
                 continue;
             }
@@ -62,8 +62,8 @@ impl Renderer {
 
         let status_y = hotbar_y - 20.0 * gs;
         let heart_size = 9.0 * gs;
-        let is_creative = self.state.gamemode == 1;
-        let is_spectator = self.state.gamemode == 3;
+        let is_creative = self.state.hud.gamemode() == 1;
+        let is_spectator = self.state.hud.gamemode() == 3;
         let show_status = !is_creative && !is_spectator;
 
         if show_status {
@@ -80,9 +80,9 @@ impl Renderer {
             // Vanilla hearts use 9px texture cells at 8px spacing.
             let heart_spacing = 8.0 * gs;
 
-            let abs_amount = self.state.absorption;
+            let abs_amount = self.state.hud.absorption();
             let has_abs = abs_amount > 0.0;
-            let has_armor = self.state.armor_points > 0;
+            let has_armor = self.state.hud.armor_points() > 0;
 
             // Row 0: health (left) + food (right)
             let health_y = status_y;
@@ -141,11 +141,11 @@ impl Renderer {
 
             // -- Health hearts --
             let flash_health =
-                self.state.health_timer > 0 && (self.state.health_timer / 3) % 2 == 1;
-            let display_health = if flash_health && self.state.prev_health > 0.0 {
-                self.state.prev_health
+                self.state.hud.health_timer() > 0 && (self.state.hud.health_timer() / 3) % 2 == 1;
+            let display_health = if flash_health && self.state.hud.prev_health() > 0.0 {
+                self.state.hud.prev_health()
             } else {
-                self.state.health
+                self.state.hud.health()
             };
             let full_hearts = (display_health / 2.0).floor().clamp(0.0, 10.0) as i32;
             let has_half = display_health % 2.0 >= 0.5 && full_hearts < 10;
@@ -195,7 +195,7 @@ impl Renderer {
 
             // -- Armor bar --
             if has_armor {
-                let armor_points = self.state.armor_points.min(20);
+                let armor_points = self.state.hud.armor_points().min(20);
                 let full_armor = (armor_points / 2) as i32;
                 let has_half_armor = armor_points % 2 == 1 && full_armor < 10;
 
@@ -245,10 +245,10 @@ impl Renderer {
 
             // Hunger shanks using icons.png
             // MC 1.8.9: empty(16,27)  full(52,27)  half(61,27)
-            let food_count = self.state.food.clamp(0, 20);
-            let flash_food = self.state.food_timer > 0 && (self.state.food_timer / 3) % 2 == 1;
-            let display_food = if flash_food && self.state.prev_food > 0 {
-                self.state.prev_food
+            let food_count = self.state.hud.food().clamp(0, 20);
+            let flash_food = self.state.hud.food_timer() > 0 && (self.state.hud.food_timer() / 3) % 2 == 1;
+            let display_food = if flash_food && self.state.hud.prev_food() > 0 {
+                self.state.hud.prev_food()
             } else {
                 food_count
             };
@@ -314,7 +314,7 @@ impl Renderer {
                 5.0 / 256.0,
                 [1.0, 1.0, 1.0, 1.0],
             );
-            let xp_progress = self.state.experience_bar.clamp(0.0, 1.0);
+            let xp_progress = self.state.hud.experience_bar().clamp(0.0, 1.0);
             if xp_progress > 0.0 {
                 icons_gui.add_quad(
                     hotbar_x,
@@ -329,12 +329,12 @@ impl Renderer {
                 );
             }
             // XP level number (white text with shadow, vanilla style)
-            if self.state.experience_level > 0 {
+            if self.state.hud.experience_level() > 0 {
                 font_gui.draw_text_shadowed(
                     &mut self.font,
                     sw / 2.0,
                     hotbar_y - 21.0 * gs,
-                    &self.state.experience_level.to_string(),
+                    &self.state.hud.experience_level().to_string(),
                     font_sz * 0.85,
                     [1.0, 1.0, 1.0, 1.0],
                     gs,
@@ -343,7 +343,7 @@ impl Renderer {
         } // end if show_status
 
         // Action bar — vanilla MC 1.8.9 GuiIngame.renderGameOverlay
-        if let Some(ref text) = self.state.action_bar {
+        if let Some(ref text) = self.state.hud.action_bar() {
             let action_font_sz = font_sz * 0.85;
             let bar_y = hotbar_y - 37.0 * gs;
             font_gui.draw_text_centered(
@@ -356,11 +356,11 @@ impl Renderer {
             );
         }
 
-        if self.state.raining {
-            let label = if self.state.thunder_level > 0.05 {
-                self.state.ui_text.get("rustcraft.weather.thunderstorm")
+        if self.state.hud.raining() {
+            let label = if self.state.hud.thunder_level() > 0.05 {
+                self.state.settings.ui_text().get("rustcraft.weather.thunderstorm")
             } else {
-                self.state.ui_text.get("rustcraft.weather.rain")
+                self.state.settings.ui_text().get("rustcraft.weather.rain")
             };
             font_gui.fill_rect(
                 8.0 * gs,
@@ -385,13 +385,13 @@ impl Renderer {
         metrics: &MenuMetrics,
         inventory_gui: &mut GuiVertexBuilder,
     ) {
-        let effects = &self.state.active_potion_effects;
+        let effects = &self.state.hud.active_potion_effects();
         if effects.is_empty() {
             return;
         }
         let gs = metrics.gs;
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let icon_size = 18.0 * gs;
         let icon_step = 20.0 * gs;
         let icon_x = sw - icon_size - 2.0 * gs;
@@ -427,14 +427,14 @@ impl Renderer {
         widget_gui: &mut GuiVertexBuilder,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        let Some(status) = self.state.resource_pack_status.clone() else {
+        let Some(status) = self.state.server_list.resource_pack_status().clone() else {
             return;
         };
-        if self.state.chat_open || self.state.inventory_open || self.state.health <= 0.0 {
+        if self.state.hud.chat_open() || self.state.inventory.inventory_open() || self.state.hud.health() <= 0.0 {
             return;
         }
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
         let font_sz = metrics.font_sz;
         if status.starts_with("available") {
@@ -449,7 +449,7 @@ impl Renderer {
                 &mut self.font,
                 sw / 2.0,
                 y + 10.0 * gs,
-                self.state.ui_text.get("resourcePack.title"),
+                self.state.settings.ui_text().get("resourcePack.title"),
                 font_sz,
                 [1.0, 1.0, 1.0, 1.0],
                 gs,
@@ -458,7 +458,7 @@ impl Renderer {
                 &mut self.font,
                 sw / 2.0,
                 y + 32.0 * gs,
-                self.state.ui_text.get("rustcraft.resourcePack.prompt"),
+                self.state.settings.ui_text().get("rustcraft.resourcePack.prompt"),
                 font_sz * 0.72,
                 [0.82, 0.82, 0.82, 1.0],
             );
@@ -470,7 +470,7 @@ impl Renderer {
                 font_gui,
                 crate::ui::button_ids::RESOURCE_PACK_ACCEPT,
                 [sw / 2.0 - bw - 4.0 * gs, by, bw, metrics.btn_h],
-                self.state.ui_text.get("rustcraft.resourcePack.accept"),
+                self.state.settings.ui_text().get("rustcraft.resourcePack.accept"),
                 &mut self.font,
             );
             crate::render::gui::widgets::draw_button(
@@ -479,7 +479,7 @@ impl Renderer {
                 font_gui,
                 crate::ui::button_ids::RESOURCE_PACK_DECLINE,
                 [sw / 2.0 + 4.0 * gs, by, bw, metrics.btn_h],
-                self.state.ui_text.get("rustcraft.resourcePack.decline"),
+                self.state.settings.ui_text().get("rustcraft.resourcePack.decline"),
                 &mut self.font,
             );
             return;
@@ -494,7 +494,7 @@ impl Renderer {
             &mut self.font,
             x + 6.0 * gs,
             y + 5.0 * gs,
-            self.state.ui_text.get("rustcraft.resourcePack.status"),
+            self.state.settings.ui_text().get("rustcraft.resourcePack.status"),
             font_sz * 0.72,
             [0.95, 0.95, 0.95, 1.0],
         );
@@ -515,11 +515,11 @@ impl Renderer {
         widget_gui: &mut GuiVertexBuilder,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        if self.state.health > 0.0 {
+        if self.state.hud.health() > 0.0 {
             return;
         }
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
         let btn_w = metrics.btn_w;
         let btn_h = metrics.btn_h;
@@ -538,7 +538,7 @@ impl Renderer {
             &mut self.font,
             sw / 2.0,
             sh / 4.0,
-            self.state.ui_text.get("deathScreen.title"),
+            self.state.settings.ui_text().get("deathScreen.title"),
             22.0 * gs,
             [1.0, 1.0, 1.0, 1.0],
             gs,
@@ -548,8 +548,8 @@ impl Renderer {
             sw / 2.0,
             sh / 4.0 + 24.0 * gs,
             &format_text(
-                self.state.ui_text.get("deathScreen.score"),
-                &[&self.state.experience_total.max(0).to_string()],
+                self.state.settings.ui_text().get("deathScreen.score"),
+                &[&self.state.hud.experience_total().max(0).to_string()],
             ),
             metrics.font_sz,
             [1.0, 1.0, 1.0, 1.0],
@@ -561,7 +561,7 @@ impl Renderer {
             font_gui,
             crate::ui::button_ids::RESPAWN,
             [btn_x, sh / 4.0 + 72.0 * gs, btn_w, btn_h],
-            self.state.ui_text.get("deathScreen.respawn"),
+            self.state.settings.ui_text().get("deathScreen.respawn"),
             &mut self.font,
         );
         crate::render::gui::widgets::draw_button(
@@ -570,7 +570,7 @@ impl Renderer {
             font_gui,
             crate::ui::button_ids::DEATH_TITLE_SCREEN,
             [btn_x, sh / 4.0 + 100.0 * gs, btn_w, btn_h],
-            self.state.ui_text.get("deathScreen.titleScreen"),
+            self.state.settings.ui_text().get("deathScreen.titleScreen"),
             &mut self.font,
         );
     }

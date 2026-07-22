@@ -16,19 +16,9 @@ impl Renderer {
         height: u32,
         data: super::custom_sky::CustomSky,
     ) {
-        // Destroy old image and its descriptor-bound view
-        if self.custom_sky_texture_image != vk::Image::null() {
-            unsafe {
-                self.device
-                    .destroy_image_view(self.custom_sky_texture_view, None);
-                self.device
-                    .destroy_image(self.custom_sky_texture_image, None);
-            }
-            if let Some(alloc) = self.custom_sky_texture_alloc.take() {
-                self.allocator.free(alloc).ok();
-            }
-        }
-
+        // Build the new texture first; only destroy the old one once every
+        // Vulkan call below has succeeded so a mid-reload failure leaves the
+        // previously bound sky image intact.
         let reqs = vk::ImageCreateInfo {
             image_type: vk::ImageType::TYPE_2D,
             format: vk::Format::R8G8B8A8_SRGB,
@@ -43,27 +33,41 @@ impl Renderer {
             usage: vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST,
             ..Default::default()
         };
-        let image = unsafe { self.device.create_image(&reqs, None) }.unwrap();
-        let mem_reqs = unsafe { self.device.get_image_memory_requirements(image) };
-        let alloc = self
-            .allocator
-            .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-                name: "custom_sky",
-                requirements: mem_reqs,
-                location: gpu_allocator::MemoryLocation::GpuOnly,
-                linear: false,
-                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-            })
-            .unwrap();
-        unsafe {
+        let new_image = match unsafe { self.device.create_image(&reqs, None) } {
+            Ok(image) => image,
+            Err(e) => {
+                log::error!("reload_custom_sky: create_image failed: {e:?}");
+                return;
+            }
+        };
+        let mem_reqs = unsafe { self.device.get_image_memory_requirements(new_image) };
+        let new_alloc = match self.resources.allocator_mut().allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
+            name: "custom_sky",
+            requirements: mem_reqs,
+            location: gpu_allocator::MemoryLocation::GpuOnly,
+            linear: false,
+            allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
+        }) {
+            Ok(alloc) => alloc,
+            Err(e) => {
+                log::error!("reload_custom_sky: allocate failed: {e:?}");
+                unsafe { self.device.destroy_image(new_image, None); }
+                return;
+            }
+        };
+        if let Err(e) = unsafe {
             self.device
-                .bind_image_memory(image, alloc.memory(), alloc.offset())
-                .unwrap();
+                .bind_image_memory(new_image, new_alloc.memory(), new_alloc.offset())
+        } {
+            log::error!("reload_custom_sky: bind_image_memory failed: {e:?}");
+            unsafe { self.device.destroy_image(new_image, None); }
+            let _ = self.resources.allocator_mut().free(new_alloc);
+            return;
         }
-        let view = unsafe {
+        let new_view = match unsafe {
             self.device.create_image_view(
                 &vk::ImageViewCreateInfo {
-                    image,
+                    image: new_image,
                     view_type: vk::ImageViewType::TYPE_2D,
                     format: vk::Format::R8G8B8A8_SRGB,
                     subresource_range: vk::ImageSubresourceRange {
@@ -77,23 +81,44 @@ impl Renderer {
                 },
                 None,
             )
-        }
-        .unwrap();
+        } {
+            Ok(view) => view,
+            Err(e) => {
+                log::error!("reload_custom_sky: create_image_view failed: {e:?}");
+                unsafe { self.device.destroy_image(new_image, None); }
+                let _ = self.resources.allocator_mut().free(new_alloc);
+                return;
+            }
+        };
 
         super::resources::upload_new_gpu_image(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             self.command_pool,
             self.queue,
-            image,
+            new_image,
             width,
             height,
             pixels,
         );
 
-        self.custom_sky_texture_image = image;
-        self.custom_sky_texture_view = view;
-        self.custom_sky_texture_alloc = Some(alloc);
+        // New texture is fully ready; destroy the old image and its
+        // descriptor-bound view now.
+        if self.custom_sky_texture_image != vk::Image::null() {
+            unsafe {
+                self.device
+                    .destroy_image_view(self.custom_sky_texture_view, None);
+                self.device
+                    .destroy_image(self.custom_sky_texture_image, None);
+            }
+            if let Some(alloc) = self.custom_sky_texture_alloc.take() {
+                self.resources.free(alloc);
+            }
+        }
+
+        self.custom_sky_texture_image = new_image;
+        self.custom_sky_texture_view = new_view;
+        self.custom_sky_texture_alloc = Some(new_alloc);
         self.custom_sky_data = Some(data);
 
         // Re-write descriptor sets to bind the new image view
@@ -161,7 +186,7 @@ impl Renderer {
             .unwrap_or_else(nalgebra::Matrix4::identity);
 
         let (custom_alpha, custom_rot) = if let Some(ref sky) = self.custom_sky_data {
-            let time_f = self.state.day_time as f32;
+            let time_f = self.state.hud.day_time() as f32;
             let alpha = sky
                 .layers
                 .iter()
@@ -171,7 +196,7 @@ impl Renderer {
                 .layers
                 .iter()
                 .find(|l| l.rotate)
-                .map(|l| (self.state.day_time as f32 * l.speed).to_radians())
+                .map(|l| (self.state.hud.day_time() as f32 * l.speed).to_radians())
                 .unwrap_or(0.0);
             (alpha.clamp(0.0, 1.0), rot)
         } else {
@@ -189,15 +214,18 @@ impl Renderer {
 
         let data = bytemuck::bytes_of(&uniforms);
         unsafe {
-            let mapped = self
-                .device
-                .map_memory(
-                    self.sky_uniform_alloc.memory(),
-                    self.sky_uniform_alloc.offset(),
-                    std::mem::size_of::<SkyUniforms>() as u64,
-                    vk::MemoryMapFlags::empty(),
-                )
-                .unwrap();
+            let mapped = match self.device.map_memory(
+                self.sky_uniform_alloc.memory(),
+                self.sky_uniform_alloc.offset(),
+                std::mem::size_of::<SkyUniforms>() as u64,
+                vk::MemoryMapFlags::empty(),
+            ) {
+                Ok(ptr) => ptr,
+                Err(e) => {
+                    log::error!("update_sky_uniforms: map_memory failed: {e:?}");
+                    return;
+                }
+            };
             std::ptr::copy_nonoverlapping(data.as_ptr(), mapped as *mut u8, data.len());
             self.device.unmap_memory(self.sky_uniform_alloc.memory());
         }
@@ -210,7 +238,7 @@ impl Renderer {
             .unwrap()
             .as_secs_f64()
             % 3600.0) as f32;
-        let aspect = self.swapchain_extent.width as f32 / self.swapchain_extent.height as f32;
+        let aspect = self.swapchain.swapchain_extent.width as f32 / self.swapchain.swapchain_extent.height as f32;
         let uniforms = [time, aspect];
 
         unsafe {
@@ -238,8 +266,8 @@ impl Renderer {
                 cb,
                 0,
                 &[vk::Viewport {
-                    width: self.swapchain_extent.width as f32,
-                    height: self.swapchain_extent.height as f32,
+                    width: self.swapchain.swapchain_extent.width as f32,
+                    height: self.swapchain.swapchain_extent.height as f32,
                     max_depth: 1.0,
                     ..Default::default()
                 }],
@@ -248,7 +276,7 @@ impl Renderer {
                 cb,
                 0,
                 &[vk::Rect2D {
-                    extent: self.swapchain_extent,
+                    extent: self.swapchain.swapchain_extent,
                     ..Default::default()
                 }],
             );
@@ -265,14 +293,14 @@ impl Renderer {
         let viewport = vk::Viewport {
             x: 0.0,
             y: 0.0,
-            width: self.swapchain_extent.width as f32,
-            height: self.swapchain_extent.height as f32,
+            width: self.swapchain.swapchain_extent.width as f32,
+            height: self.swapchain.swapchain_extent.height as f32,
             min_depth: 0.0,
             max_depth: 1.0,
         };
         let scissors = [vk::Rect2D {
             offset: vk::Offset2D { x: 0, y: 0 },
-            extent: self.swapchain_extent,
+            extent: self.swapchain.swapchain_extent,
         }];
 
         unsafe {

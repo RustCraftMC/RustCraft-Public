@@ -6,6 +6,19 @@ use crate::client::state::GameState;
 use crate::client::tick::TickTimer;
 use winit::event_loop::ActiveEventLoop;
 
+/// Pre-computed UI state flags shared across multiple sync sections in
+/// `sync_renderer_state`. Constructed once per frame and passed by reference
+/// to avoid repeating the same match expressions in each sub-method.
+struct SyncUiFlags {
+    controls_open: bool,
+    alt_manager_open: bool,
+    multiplayer_open: bool,
+    server_editor_open: bool,
+    connection_screen_open: bool,
+    server_address_open: bool,
+    modding_open: bool,
+}
+
 impl App {
     pub(super) fn handle_redraw(&mut self, event_loop: &ActiveEventLoop) {
         let frame_started = std::time::Instant::now();
@@ -16,23 +29,23 @@ impl App {
             .unwrap_or(0);
         let published = self.last_frame_profile;
         if let Some(renderer) = &mut self.renderer {
-            renderer.state.frame_total_us = published.total_us;
-            renderer.state.frame_interval_us = frame_interval_us;
-            renderer.state.frame_outside_us = frame_interval_us.saturating_sub(published.total_us);
-            renderer.state.frame_tasks_us = published.tasks_us;
-            renderer.state.frame_network_us = published.network_us;
-            renderer.state.frame_world_us = published.world_us;
-            renderer.state.frame_tick_us = published.tick_us;
-            renderer.state.frame_sync_us = published.sync_us;
-            renderer.state.frame_render_us = published.render_us;
-            renderer.state.frame_other_us = published.other_us;
-            renderer.state.frame_script_us = published.script_us;
-            renderer.state.frame_script_callbacks = published.script_callbacks;
-            renderer.state.frame_script_slow_callbacks = published.script_slow_callbacks;
-            renderer.state.frame_network_debug = published.network_debug;
+            renderer.state.frame_profile.set_frame_total_us(published.total_us);
+            renderer.state.frame_profile.set_frame_interval_us(frame_interval_us);
+            renderer.state.frame_profile.set_frame_outside_us(frame_interval_us.saturating_sub(published.total_us));
+            renderer.state.frame_profile.set_frame_tasks_us(published.tasks_us);
+            renderer.state.frame_profile.set_frame_network_us(published.network_us);
+            renderer.state.frame_profile.set_frame_world_us(published.world_us);
+            renderer.state.frame_profile.set_frame_tick_us(published.tick_us);
+            renderer.state.frame_profile.set_frame_sync_us(published.sync_us);
+            renderer.state.frame_profile.set_frame_render_us(published.render_us);
+            renderer.state.frame_profile.set_frame_other_us(published.other_us);
+            renderer.state.frame_profile.set_frame_script_us(published.script_us);
+            renderer.state.frame_profile.set_frame_script_callbacks(published.script_callbacks);
+            renderer.state.frame_profile.set_frame_script_slow_callbacks(published.script_slow_callbacks);
+            renderer.state.frame_profile.set_frame_network_debug(published.network_debug);
             // Only the Playing state guarantees the window is focused (unfocus
             // auto-pauses), so it's the sole state that should feed 1% low.
-            renderer.state.frame_interval_in_gameplay = matches!(self.state, GameState::Playing);
+            renderer.state.frame_profile.set_frame_interval_in_gameplay(matches!(self.state, GameState::Playing));
             renderer.state.snapshot_completed_frame_profile();
             renderer.state.reset_current_frame_profile();
         }
@@ -42,12 +55,12 @@ impl App {
         let tasks_us = tasks_started.elapsed().as_micros() as u64;
 
         let network_started = std::time::Instant::now();
-        let network_result = if self.connection.is_some() {
+        let network_result = if self.net_ctrl.connection.is_some() {
             client::network::poll_network(
-                &mut self.connection,
+                &mut self.net_ctrl.connection,
                 &mut self.scripts,
                 &mut self.player,
-                &mut self.network_state,
+                &mut self.net_ctrl.network_state,
                 &mut self.world,
                 &mut self.inventory,
                 &mut self.session,
@@ -87,18 +100,19 @@ impl App {
                 // The incremental builder below handles 4 at a time.
                 self.world.enqueue_all_chunks_for_mesh();
                 self.set_cursor_captured(true);
-                self.mouse_captured = true;
+                self.input_ctrl.mouse_captured = true;
             }
         }
 
         // Playing → Disconnected: detect connection loss
         if matches!(self.state, GameState::Playing) {
             let still_connected = self
+                .net_ctrl
                 .connection
                 .as_ref()
                 .map(|c| c.connected.load(std::sync::atomic::Ordering::SeqCst))
                 .unwrap_or(false);
-            if !still_connected && self.connection.is_some() {
+            if !still_connected && self.net_ctrl.connection.is_some() {
                 let reason = self
                     .session
                     .last_disconnect_reason
@@ -178,7 +192,7 @@ impl App {
         if self.inventory.window_just_opened {
             self.inventory.window_just_opened = false;
             self.inventory_open = true;
-            self.mouse_captured = false;
+            self.input_ctrl.mouse_captured = false;
             self.set_cursor_captured(false);
         }
         // Auto-close inventory UI when the server closes our container window
@@ -197,7 +211,7 @@ impl App {
             self.inventory_open = false;
             self.inventory.had_server_window = false;
             self.inventory.cursor = crate::client::inventory::ItemStack::EMPTY;
-            self.mouse_captured = true;
+            self.input_ctrl.mouse_captured = true;
             self.set_cursor_captured(true);
         }
         if self.inventory.open_window_id != 0 {
@@ -205,14 +219,14 @@ impl App {
         }
 
         if matches!(self.state, GameState::Playing)
-            && self.mouse_captured
+            && self.input_ctrl.mouse_captured
             && self
                 .session
                 .resource_pack
                 .as_ref()
                 .is_some_and(|pack| pack.status == "available")
         {
-            self.mouse_captured = false;
+            self.input_ctrl.mouse_captured = false;
             self.set_cursor_captured(false);
         }
 
@@ -241,9 +255,9 @@ impl App {
                     .get_block(eye.x as i32, eye.y as i32, eye.z as i32),
                 crate::world::block::Block::FlowingWater | crate::world::block::Block::StillWater
             );
-            renderer.state.underwater = underwater;
-            renderer.state.underwater_yaw = self.player.camera.yaw;
-            renderer.state.underwater_pitch = self.player.camera.pitch;
+            renderer.state.settings.set_underwater(underwater);
+            renderer.state.settings.set_underwater_yaw(self.player.camera.yaw);
+            renderer.state.settings.set_underwater_pitch(self.player.camera.pitch);
             self.player.camera.hurt_cam_enabled = hurt_cam;
             self.player.camera.fov_change_enabled = fov_change;
             let mut fov_mod = 1.0f32;
@@ -333,6 +347,7 @@ impl App {
             }
         }
         let refreshed = self
+            .net_ctrl
             .server_refresh_task
             .as_ref()
             .and_then(|task| task.try_finish());
@@ -341,24 +356,24 @@ impl App {
             self.selected_server = self
                 .selected_server
                 .min(self.servers.servers.len().saturating_sub(1));
-            self.server_refresh_task = None;
+            self.net_ctrl.server_refresh_task = None;
             self.session
                 .push_system_line(self.ui.t("rustcraft.server.refreshed"));
         }
 
-        let connected = self.connect_task.as_ref().and_then(|task| {
+        let connected = self.net_ctrl.connect_task.as_ref().and_then(|task| {
             task.try_finish()
                 .map(|result| (task.address.clone(), result))
         });
         if let Some((addr, result)) = connected {
-            self.connect_task = None;
+            self.net_ctrl.connect_task = None;
             match result {
                 Ok(conn) => {
                     log::info!("connection task completed successfully: server={addr}");
                     self.selected_server = self.servers.upsert(addr.clone(), addr.clone());
-                    self.connection = Some(conn);
+                    self.net_ctrl.connection = Some(conn);
                     self.scripts.set_connection_active(true);
-                    self.network_state = crate::client::network::ClientNetworkState::new();
+                    self.net_ctrl.network_state = crate::client::network::ClientNetworkState::new();
                     self.session.push_system_line(format!(
                         "{}: {}",
                         self.ui.t("rustcraft.connection.connected"),
@@ -390,7 +405,7 @@ impl App {
                     self.pending_dig_cancel = None;
                     self.block_hit_delay = 0;
                     self.state = GameState::Multiplayer;
-                    self.mouse_captured = false;
+                    self.input_ctrl.mouse_captured = false;
                     self.set_cursor_captured(false);
                 }
             }
@@ -405,7 +420,7 @@ impl App {
 
         self.ui.update_fps(self.fps_frames);
         if let Some(renderer) = &mut self.renderer {
-            renderer.state.fps_count = self.fps_frames;
+            renderer.state.hud.set_fps_count(self.fps_frames);
         }
         if let Some(window) = &self.window {
             window.set_title(super::WINDOW_TITLE);
@@ -435,27 +450,27 @@ impl App {
             self.dig.cancel();
             self.pending_dig_cancel = None;
             self.block_hit_delay = 0;
-            if self.mouse_captured {
-                self.mouse_captured = false;
+            if self.input_ctrl.mouse_captured {
+                self.input_ctrl.mouse_captured = false;
                 self.set_cursor_captured(false);
             }
         }
         if !matches!(self.state, GameState::Playing) {
             // Keep the world alive when menus are open — skip player input only
-            self.mouse_dx = 0.0;
-            self.mouse_dy = 0.0;
+            self.input_ctrl.mouse_dx = 0.0;
+            self.input_ctrl.mouse_dy = 0.0;
         }
 
         // Mouse input — only when the game has focus
-        if self.mouse_captured {
+        if self.input_ctrl.mouse_captured {
             self.player.process_mouse(
-                self.mouse_dx as f32,
-                self.mouse_dy as f32,
+                self.input_ctrl.mouse_dx as f32,
+                self.input_ctrl.mouse_dy as f32,
                 self.config.mouse_sensitivity,
                 self.config.invert_mouse,
             );
-            self.mouse_dx = 0.0;
-            self.mouse_dy = 0.0;
+            self.input_ctrl.mouse_dx = 0.0;
+            self.input_ctrl.mouse_dy = 0.0;
         }
 
         let physics_ticks = self.tick_timer.update();
@@ -480,7 +495,7 @@ impl App {
                 let Some(packet) = hooked.packet else {
                     continue;
                 };
-                if let Err(error) = client::network::send_dynamic_packet(&self.connection, &packet)
+                if let Err(error) = client::network::send_dynamic_packet(&self.net_ctrl.connection, &packet)
                 {
                     log::warn!(
                         target: "rustcraft::lua",
@@ -501,15 +516,15 @@ impl App {
                 self.item_use_active = false;
                 self.item_use_timer = 0.0;
                 self.food_cooldown = 4;
-                if self.connection.is_none() {
+                if self.net_ctrl.connection.is_none() {
                     self.inventory.remove_selected_one();
                 }
             }
             // Vanilla PlayerControllerMP.updateController synchronizes the
             // selected hotbar slot before any C07/C08 interaction packet.
             client::network::sync_held_item(
-                &self.connection,
-                &mut self.network_state,
+                &self.net_ctrl.connection,
+                &mut self.net_ctrl.network_state,
                 self.inventory.selected,
             );
             // A render-frame release/use edge may have queued ABORT. Vanilla
@@ -518,7 +533,7 @@ impl App {
             // Vanilla GuiContainer.mouseClicked sends C0E during
             // currentScreen.handleMouseInput() inside runTick, before
             // clickMouse.  Flush any clicks the render-frame callback queued.
-            if let Some(connection) = &self.connection {
+            if let Some(connection) = &self.net_ctrl.connection {
                 for data in self.pending_click_windows.drain(..) {
                     connection.send_play_packet(0x0E, &data);
                 }
@@ -556,9 +571,9 @@ impl App {
             // When the mouse isn't captured (menu open), pass neutral input
             // so the player doesn't move but still falls/lands naturally.
             self.player.using_item = self.item_use_active;
-            if self.mouse_captured {
+            if self.input_ctrl.mouse_captured {
                 self.player.tick(
-                    &self.input,
+                    &self.input_ctrl.input,
                     &self.world,
                     &self.entities,
                     self.session.entity_id,
@@ -619,7 +634,7 @@ impl App {
             );
             if self.last_sent_abilities != Some(new_abilities) {
                 client::network::send_player_abilities(
-                    &self.connection,
+                    &self.net_ctrl.connection,
                     ability_flags,
                     self.session.flying_speed,
                     self.session.walking_speed,
@@ -627,13 +642,13 @@ impl App {
                 self.last_sent_abilities = Some(new_abilities);
             }
             client::network::send_player_tick(
-                &self.connection,
+                &self.net_ctrl.connection,
                 &mut self.player,
-                &mut self.network_state,
+                &mut self.net_ctrl.network_state,
                 self.session.entity_id,
             );
             self.use_release_pending = false;
-            self.input.tick_reset();
+            self.input_ctrl.input.tick_reset();
         }
 
         if !interaction_meshes.is_empty() {
@@ -815,17 +830,10 @@ impl App {
     }
 
     fn sync_renderer_state(&mut self) {
-        if self.last_ui_text_hash == 0 || self.session.locale != self.config.language {
-            self.session.locale.clone_from(&self.config.language);
-            self.session.text.inventory_rejected = self.ui.t("rustcraft.inventory.rejected");
-            self.session.text.resource_pack_offered = self.ui.t("rustcraft.resourcePack.offered");
-            self.session.text.opened_window = self.ui.t("rustcraft.inventory.openedWindow");
-        }
-        self.session.view_distance = self.config.render_distance;
-        self.session.skin_parts = self.config.skin_parts;
+        self.sync_session_locale();
 
         let target = if matches!(self.state, GameState::Playing)
-            && self.mouse_captured
+            && self.input_ctrl.mouse_captured
             && !self.inventory_open
             && !self.chat_open
         {
@@ -838,19 +846,22 @@ impl App {
             return;
         }
 
-        let controls_open = matches!(&self.state, GameState::Controls { .. });
-        let alt_manager_open = matches!(&self.state, GameState::AltManager);
-        let multiplayer_open = matches!(&self.state, GameState::Multiplayer);
-        let server_editor_open = matches!(&self.state, GameState::ServerEditor { .. });
-        let connection_screen_open = matches!(
-            &self.state,
-            GameState::Connecting | GameState::LoadingWorld | GameState::Disconnected { .. }
-        );
-        let server_address_open = matches!(
-            &self.state,
-            GameState::DirectConnect | GameState::Connecting | GameState::LoadingWorld
-        );
-        let modding_open = matches!(&self.state, GameState::Modding { .. });
+        // Pre-compute UI state flags shared across multiple sync sections.
+        let ui_flags = SyncUiFlags {
+            controls_open: matches!(&self.state, GameState::Controls { .. }),
+            alt_manager_open: matches!(&self.state, GameState::AltManager),
+            multiplayer_open: matches!(&self.state, GameState::Multiplayer),
+            server_editor_open: matches!(&self.state, GameState::ServerEditor { .. }),
+            connection_screen_open: matches!(
+                &self.state,
+                GameState::Connecting | GameState::LoadingWorld | GameState::Disconnected { .. }
+            ),
+            server_address_open: matches!(
+                &self.state,
+                GameState::DirectConnect | GameState::Connecting | GameState::LoadingWorld
+            ),
+            modding_open: matches!(&self.state, GameState::Modding { .. }),
+        };
 
         // Static world render metadata and downloaded skin completions only
         // change on the 20 Hz client tick. Re-hashing signs, skull NBT and the
@@ -881,7 +892,7 @@ impl App {
                 .as_ref()
                 .map(|info| format!("{} Configuration", info.name))
                 .unwrap_or_else(|| format!("{mod_id} Configuration"));
-            let locked = self.connection.is_some()
+            let locked = self.net_ctrl.connection.is_some()
                 && mod_info
                     .as_ref()
                     .is_some_and(|info| info.protocol_translator);
@@ -896,13 +907,60 @@ impl App {
             (title, rows, locked)
         });
 
-        let Some(renderer) = &mut self.renderer else {
+        if self.renderer.is_none() {
             return;
-        };
+        }
 
-        renderer.state.entity_state_hash = entity_hash;
+        if let Some(renderer) = &mut self.renderer {
+            renderer.state.frame_profile.set_entity_state_hash(entity_hash);
+        }
+
+        self.sync_chest_entries();
+
+        if let Some(renderer) = &mut self.renderer {
+            if let Some((pending, content_hash, layout_hash)) = player_skin_update {
+                if renderer.state.hud.player_skin_content_hash() != content_hash
+                    || renderer.state.hud.player_skin_layout_hash() != layout_hash
+                {
+                    renderer.state.hud.set_pending_player_skins(pending);
+                    renderer.state.hud.set_player_skin_content_hash(content_hash);
+                    renderer.state.hud.set_player_skin_layout_hash(layout_hash);
+                }
+            }
+        }
+
+        self.sync_hotbar();
+        self.sync_sign_entries(refresh_static_render_state);
+        self.sync_inventory_window();
+        self.sync_block_selection(&target);
+        self.sync_render_settings();
+        self.sync_ui_text(&ui_flags);
+        self.sync_menu_state(&ui_flags, &mod_config_view);
+        self.sync_hud_gameplay(&target, refresh_static_render_state);
+        self.sync_player_list(refresh_static_render_state);
+        self.sync_entity_billboards(entity_hash, refresh_static_render_state);
+        self.sync_skull_and_particles(skull_hash);
+        self.sync_local_player_and_hand(&target, refresh_static_render_state);
+        self.sync_inventory_slots();
+    }
+
+    /// Sync session locale and client settings that must be updated every frame
+    /// regardless of renderer availability.
+    fn sync_session_locale(&mut self) {
+        if self.last_ui_text_hash == 0 || self.session.locale != self.config.language {
+            self.session.locale.clone_from(&self.config.language);
+            self.session.text.inventory_rejected = self.ui.t("rustcraft.inventory.rejected");
+            self.session.text.resource_pack_offered = self.ui.t("rustcraft.resourcePack.offered");
+            self.session.text.opened_window = self.ui.t("rustcraft.inventory.openedWindow");
+        }
+        self.session.view_distance = self.config.render_distance;
+        self.session.skin_parts = self.config.skin_parts;
+    }
+
+    fn sync_chest_entries(&mut self) {
         let chest_alpha = self.tick_timer.alpha();
-        renderer.state.chest_entries = self
+        let renderer = self.renderer.as_mut().unwrap();
+        renderer.state.hud.set_chest_entries(self
             .world
             .chests
             .iter()
@@ -948,171 +1006,172 @@ impl App {
                     block_light: light.block,
                 })
             })
-            .collect();
-        renderer
-            .state
-            .chest_entries
+            .collect());
+        renderer.state.hud.chest_entries_mut()
             .sort_unstable_by_key(|entry| entry.position);
-        if let Some((pending, content_hash, layout_hash)) = player_skin_update {
-            if renderer.state.player_skin_content_hash != content_hash
-                || renderer.state.player_skin_layout_hash != layout_hash
-            {
-                renderer.state.pending_player_skins = pending;
-                renderer.state.player_skin_content_hash = content_hash;
-                renderer.state.player_skin_layout_hash = layout_hash;
-            }
-        }
+    }
 
+    fn sync_hotbar(&mut self) {
+        let renderer = self.renderer.as_mut().unwrap();
         for i in 0..9 {
             let slot = &self.inventory.slots[i];
-            renderer.state.hotbar_slots[i] = (slot.item_id, slot.count, slot.damage);
+            renderer.state.inventory.hotbar_slots_mut()[i] = (slot.item_id, slot.count, slot.damage);
         }
-        renderer.state.hotbar_selected = self.inventory.selected;
-        renderer.state.inventory_open = self.inventory_open;
-        if refresh_static_render_state {
-            // Build from the current block state rather than hashing the raw
-            // tile-entity map. Tile data can arrive before its chunk and stale
-            // entries can survive an unload, so only real, currently loaded
-            // sign blocks are allowed into render state.
-            let mut sign_entries: Vec<_> = self
-                .session
-                .sign_data
-                .iter()
-                .filter_map(|(&pos, lines)| {
-                    let block = self.world.get_block(pos.0, pos.1, pos.2);
-                    let wall_mounted = block == crate::world::block::Block::WallSign;
-                    if !wall_mounted && block != crate::world::block::Block::StandingSign {
-                        return None;
-                    }
-                    Some(crate::render::hud::entities::SignEntry {
-                        position: [pos.0, pos.1, pos.2],
-                        // Network decoding already converts the JSON component
-                        // to plain text. Parsing it again loses nested content.
-                        lines: lines.to_vec(),
-                        wall_mounted,
-                        metadata: self.world.get_block_metadata(pos.0, pos.1, pos.2),
-                    })
-                })
-                .collect();
-            sign_entries.sort_unstable_by_key(|entry| entry.position);
+        renderer.state.inventory.set_hotbar_selected(self.inventory.selected);
+        renderer.state.inventory.set_inventory_open(self.inventory_open);
+    }
 
-            let sign_hash = {
-                use std::hash::Hasher;
-                let mut h = fnv::FnvHasher::default();
-                h.write_usize(sign_entries.len());
-                for sign in &sign_entries {
-                    for position in sign.position {
-                        h.write_i32(position);
-                    }
-                    h.write_u8(sign.wall_mounted as u8);
-                    h.write_u8(sign.metadata);
-                    for line in &sign.lines {
-                        h.write(line.as_bytes());
-                        h.write_u8(0);
-                    }
+    fn sync_sign_entries(&mut self, refresh_static: bool) {
+        let renderer = self.renderer.as_mut().unwrap();
+        if !refresh_static {
+            return;
+        }
+        // Build from the current block state rather than hashing the raw
+        // tile-entity map. Tile data can arrive before its chunk and stale
+        // entries can survive an unload, so only real, currently loaded
+        // sign blocks are allowed into render state.
+        let mut sign_entries: Vec<_> = self
+            .session
+            .sign_data
+            .iter()
+            .filter_map(|(&pos, lines)| {
+                let block = self.world.get_block(pos.0, pos.1, pos.2);
+                let wall_mounted = block == crate::world::block::Block::WallSign;
+                if !wall_mounted && block != crate::world::block::Block::StandingSign {
+                    return None;
                 }
-                h.finish()
-            };
-            if sign_hash != self.last_sign_hash {
-                self.last_sign_hash = sign_hash;
-                renderer.state.sign_entries = sign_entries;
+                Some(crate::render::hud::entities::SignEntry {
+                    position: [pos.0, pos.1, pos.2],
+                    // Network decoding already converts the JSON component
+                    // to plain text. Parsing it again loses nested content.
+                    lines: lines.to_vec(),
+                    wall_mounted,
+                    metadata: self.world.get_block_metadata(pos.0, pos.1, pos.2),
+                })
+            })
+            .collect();
+        sign_entries.sort_unstable_by_key(|entry| entry.position);
+
+        let sign_hash = {
+            use std::hash::Hasher;
+            let mut h = fnv::FnvHasher::default();
+            h.write_usize(sign_entries.len());
+            for sign in &sign_entries {
+                for position in sign.position {
+                    h.write_i32(position);
+                }
+                h.write_u8(sign.wall_mounted as u8);
+                h.write_u8(sign.metadata);
+                for line in &sign.lines {
+                    h.write(line.as_bytes());
+                    h.write_u8(0);
+                }
             }
+            h.finish()
+        };
+        if sign_hash != self.last_sign_hash {
+            self.last_sign_hash = sign_hash;
+            renderer.state.hud.set_sign_entries(sign_entries);
         }
-        if self.inventory_open {
-            renderer.state.inventory_window_id = self.inventory.open_window_id;
-            renderer
-                .state
-                .inventory_window_type
-                .clone_from(&self.inventory.open_window_type);
-            renderer
-                .state
-                .inventory_window_title
-                .clone_from(&self.inventory.open_window_title);
-            renderer.state.inventory_window_slot_count = self.inventory.open_window_slot_count;
-            renderer.state.inventory_window_slots.clear();
-            renderer.state.inventory_window_slots.extend(
-                (0..self.inventory.open_window_slot_count)
-                    .map(|slot| self.inventory.item_view_for_protocol_slot(slot as i16)),
-            );
-            renderer
-                .state
-                .inventory_window_properties
-                .clone_from(&self.inventory.open_window_properties);
+    }
+
+    fn sync_inventory_window(&mut self) {
+        if !self.inventory_open {
+            return;
         }
+        let renderer = self.renderer.as_mut().unwrap();
+        renderer.state.inventory.set_inventory_window_id(self.inventory.open_window_id);
+        renderer.state.inventory.inventory_window_type_mut().clone_from(&self.inventory.open_window_type);
+        renderer.state.inventory.inventory_window_title_mut().clone_from(&self.inventory.open_window_title);
+        renderer.state.inventory.set_inventory_window_slot_count(self.inventory.open_window_slot_count);
+        renderer.state.inventory.inventory_window_slots_mut().clear();
+        renderer.state.inventory.inventory_window_slots_mut().extend(
+            (0..self.inventory.open_window_slot_count)
+                .map(|slot| self.inventory.item_view_for_protocol_slot(slot as i16)),
+        );
+        renderer.state.inventory.inventory_window_properties_mut().clone_from(&self.inventory.open_window_properties);
+    }
+
+    fn sync_block_selection(&mut self, target: &Option<client::interaction::TargetBlock>) {
+        let renderer = self.renderer.as_mut().unwrap();
         let new_boxes = target
             .as_ref()
             .map(|target| target.boxes.clone())
             .unwrap_or_default();
-        if new_boxes.len() != renderer.state.block_selection_boxes.len()
+        if new_boxes.len() != renderer.state.hud.block_selection_boxes().len()
             || new_boxes
                 .iter()
-                .zip(renderer.state.block_selection_boxes.iter())
+                .zip(renderer.state.hud.block_selection_boxes().iter())
                 .any(|(a, b)| a.min != b.min || a.max != b.max)
         {
             renderer.block_dirty = true;
         }
-        renderer.state.block_selection_boxes = new_boxes;
+        renderer.state.hud.set_block_selection_boxes(new_boxes);
         let new_dig_progress =
             if target.as_ref().map(|target| target.hit.pos) == self.dig.active_pos() {
                 self.dig.progress()
             } else {
                 0.0
             };
-        if (new_dig_progress - renderer.state.dig_progress).abs() > 0.001 {
+        if (new_dig_progress - renderer.state.hud.dig_progress()).abs() > 0.001 {
             renderer.block_dirty = true;
         }
-        renderer.state.dig_progress = new_dig_progress;
+        renderer.state.hud.set_dig_progress(new_dig_progress);
         let new_dig_pos = self.dig.active_pos().map(|p| [p.0, p.1, p.2]);
-        if new_dig_pos != renderer.state.dig_position {
+        if new_dig_pos != renderer.state.hud.dig_position() {
             renderer.block_dirty = true;
         }
-        renderer.state.dig_position = new_dig_pos;
-        renderer.state.render_distance = self.config.render_distance;
-        renderer.state.smooth_lighting = self.config.smooth_lighting;
-        renderer.state.chunk_count_loaded = self.world.chunks.len();
+        renderer.state.hud.set_dig_position(new_dig_pos);
+    }
+
+    fn sync_render_settings(&mut self) {
+        let renderer = self.renderer.as_mut().unwrap();
+        renderer.state.settings.set_render_distance(self.config.render_distance);
+        renderer.state.settings.set_smooth_lighting(self.config.smooth_lighting);
+        renderer.state.frame_profile.set_chunk_count_loaded(self.world.chunks.len());
         let sky_b = crate::render::sky::SkyGradient::daylight_factor(self.session.day_time as f32);
-        if (sky_b - renderer.state.sky_brightness_cached).abs() > 0.01 {
-            renderer.state.sky_brightness_cached = sky_b;
+        if (sky_b - renderer.state.frame_profile.sky_brightness_cached()).abs() > 0.01 {
+            renderer.state.frame_profile.set_sky_brightness_cached(sky_b);
             self.world.set_sky_brightness(sky_b);
         }
         let particles_label = self.config.particles.label();
-        if renderer.state.particles_label != particles_label {
-            renderer.state.particles_label.clear();
-            renderer.state.particles_label.push_str(particles_label);
+        if *renderer.state.settings.particles_label() != particles_label {
+            renderer.state.settings.particles_label_mut().clear();
+            renderer.state.settings.particles_label_mut().push_str(particles_label);
         }
-        renderer.state.particles_enabled = self.config.particles.enabled();
-        renderer.state.master_volume = self.config.master_volume;
-        renderer.state.music_volume = self.config.music_volume;
-        renderer.state.blocks_volume = self.config.blocks_volume;
-        renderer.state.hostile_volume = self.config.hostile_volume;
-        renderer.state.friendly_volume = self.config.friendly_volume;
-        renderer.state.players_volume = self.config.players_volume;
-        renderer.state.ambient_volume = self.config.ambient_volume;
-        renderer.state.weather_volume = self.config.weather_volume;
-        renderer.state.ui_volume = self.config.ui_volume;
+        renderer.state.settings.set_particles_enabled(self.config.particles.enabled());
+        renderer.state.settings.set_master_volume(self.config.master_volume);
+        renderer.state.settings.set_music_volume(self.config.music_volume);
+        renderer.state.settings.set_blocks_volume(self.config.blocks_volume);
+        renderer.state.settings.set_hostile_volume(self.config.hostile_volume);
+        renderer.state.settings.set_friendly_volume(self.config.friendly_volume);
+        renderer.state.settings.set_players_volume(self.config.players_volume);
+        renderer.state.settings.set_ambient_volume(self.config.ambient_volume);
+        renderer.state.settings.set_weather_volume(self.config.weather_volume);
+        renderer.state.settings.set_ui_volume(self.config.ui_volume);
         let audio_device = self.audio.device_name();
-        if renderer.state.audio_device != audio_device {
-            renderer.state.audio_device.clear();
-            renderer.state.audio_device.push_str(audio_device);
+        if *renderer.state.settings.audio_device() != audio_device {
+            renderer.state.settings.audio_device_mut().clear();
+            renderer.state.settings.audio_device_mut().push_str(audio_device);
         }
-        renderer.state.fov = self.config.fov;
-        renderer.state.max_framerate = self.config.max_framerate;
-        renderer.state.clouds = self.config.clouds;
-        renderer.state.weather_effects = self.config.weather_effects;
-        renderer.state.entity_shadows = self.config.entity_shadows;
-        renderer.state.view_bobbing = self.config.view_bobbing;
-        renderer.state.advanced_tooltips = self.config.advanced_tooltips;
-        renderer.state.chat_width = self.config.chat_width.clamp(0.1, 1.0);
-        renderer.state.chat_height = self.config.chat_height.clamp(1, 30);
-        renderer.state.chat_background = self.config.chat_background;
-        renderer.state.chat_overlay = self.config.chat_overlay;
-        renderer.state.chat_player_avatars = self.config.chat_player_avatars;
-        renderer.state.tab_player_avatars = self.config.tab_player_avatars;
-        renderer.state.better_grass = self.config.better_grass;
-        renderer.state.connected_textures = self.config.connected_textures;
+        renderer.state.settings.set_fov(self.config.fov);
+        renderer.state.settings.set_max_framerate(self.config.max_framerate);
+        renderer.state.settings.set_clouds(self.config.clouds);
+        renderer.state.settings.set_weather_effects(self.config.weather_effects);
+        renderer.state.settings.set_entity_shadows(self.config.entity_shadows);
+        renderer.state.settings.set_view_bobbing(self.config.view_bobbing);
+        renderer.state.settings.set_advanced_tooltips(self.config.advanced_tooltips);
+        renderer.state.hud.set_chat_width(self.config.chat_width.clamp(0.1, 1.0));
+        renderer.state.hud.set_chat_height(self.config.chat_height.clamp(1, 30));
+        renderer.state.hud.set_chat_background(self.config.chat_background);
+        renderer.state.hud.set_chat_overlay(self.config.chat_overlay);
+        renderer.state.hud.set_chat_player_avatars(self.config.chat_player_avatars);
+        renderer.state.hud.set_tab_player_avatars(self.config.tab_player_avatars);
+        renderer.state.settings.set_better_grass(self.config.better_grass);
+        renderer.state.settings.set_connected_textures(self.config.connected_textures);
         // Difficulty is server/world state, not a client-configurable preference.
-        renderer.state.difficulty = self.session.difficulty;
-        renderer.state.skin_parts = self.config.skin_parts;
+        renderer.state.settings.set_difficulty(self.session.difficulty);
+        renderer.state.settings.set_skin_parts(self.config.skin_parts);
         let ui_text_hash = {
             use std::hash::Hasher;
             let mut h = fnv::FnvHasher::default();
@@ -1121,53 +1180,56 @@ impl App {
         };
         if ui_text_hash != self.last_ui_text_hash {
             self.last_ui_text_hash = ui_text_hash;
-            renderer
-                .state
-                .language_code
-                .clone_from(&self.config.language);
-            renderer.state.language_name = self.ui.t("language.name");
-            renderer.state.ui_text = self.ui.text.clone();
+            renderer.state.settings.language_code_mut().clone_from(&self.config.language);
+            renderer.state.settings.set_language_name(self.ui.t("language.name"));
+            renderer.state.settings.set_ui_text(self.ui.text.clone());
         }
-        if controls_open {
-            renderer.state.control_bindings = self.keybinds.control_rows_for_device(
-                self.control_device,
-                self.rebinding_action,
+    }
+
+    fn sync_ui_text(&mut self, flags: &SyncUiFlags) {
+        let renderer = self.renderer.as_mut().unwrap();
+        if flags.controls_open {
+            renderer.state.settings.set_control_bindings(self.input_ctrl.keybinds.control_rows_for_device(
+                self.input_ctrl.control_device,
+                self.input_ctrl.rebinding_action,
                 &self.ui.i18n,
-            );
-            renderer.state.rebinding_action = self.rebinding_action;
-            renderer.state.controls_gamepad = matches!(
-                self.control_device,
+            ));
+            renderer.state.settings.set_rebinding_action(self.input_ctrl.rebinding_action);
+            renderer.state.settings.set_controls_gamepad(matches!(
+                self.input_ctrl.control_device,
                 crate::client::keybind::ControlDevice::Gamepad
-            );
+            ));
         }
-        renderer.state.mouse_sensitivity = self.config.mouse_sensitivity;
-        renderer.state.invert_mouse = self.config.invert_mouse;
-        renderer.state.gamepad_look_sensitivity = self.config.gamepad_look_sensitivity;
-        renderer.state.gamepad_cursor_speed = self.config.gamepad_cursor_speed;
-        if server_address_open {
-            renderer
-                .state
-                .server_address
-                .clone_from(&self.server_address);
-            renderer.state.username.clone_from(&self.username);
+        renderer.state.settings.set_mouse_sensitivity(self.config.mouse_sensitivity);
+        renderer.state.settings.set_invert_mouse(self.config.invert_mouse);
+        renderer.state.settings.set_gamepad_look_sensitivity(self.config.gamepad_look_sensitivity);
+        renderer.state.settings.set_gamepad_cursor_speed(self.config.gamepad_cursor_speed);
+    }
+
+    fn sync_menu_state(
+        &mut self,
+        flags: &SyncUiFlags,
+        mod_config_view: &Option<(String, Vec<crate::render::ModConfigRow>, bool)>,
+    ) {
+        let renderer = self.renderer.as_mut().unwrap();
+        if flags.server_address_open {
+            renderer.state.server_list.server_address_mut().clone_from(&self.server_address);
+            renderer.state.account.username_mut().clone_from(&self.username);
         }
-        if alt_manager_open {
-            renderer.state.account_name = self
+        if flags.alt_manager_open {
+            renderer.state.account.set_account_name(self
                 .account
                 .as_ref()
                 .and_then(|account| account.username.clone())
-                .unwrap_or_else(|| "No Microsoft account selected".to_string());
-            renderer.state.account_status = if self.auth_task.is_some() {
+                .unwrap_or_else(|| "No Microsoft account selected".to_string()));
+            renderer.state.account.set_account_status(if self.auth_task.is_some() {
                 "Waiting for Microsoft sign-in...".to_string()
             } else {
                 self.auth_status.clone()
-            };
-            renderer.state.entering_offline_name = self.entering_offline_name;
-            renderer
-                .state
-                .offline_username_input
-                .clone_from(&self.offline_username_input);
-            renderer.state.account_list = self
+            });
+            renderer.state.account.set_entering_offline_name(self.entering_offline_name);
+            renderer.state.account.offline_username_input_mut().clone_from(&self.offline_username_input);
+            renderer.state.account.set_account_list(self
                 .accounts
                 .iter()
                 .map(|account| {
@@ -1184,19 +1246,20 @@ impl App {
                         active,
                     )
                 })
-                .collect();
-            renderer.state.selected_account = self.selected_account;
+                .collect());
+            renderer.state.account.set_selected_account(self.selected_account);
         }
-        if connection_screen_open {
-            renderer.state.connection_status = match &self.state {
+        if flags.connection_screen_open {
+            renderer.state.account.set_connection_status(match &self.state {
                 GameState::Disconnected { reason } => reason.clone(),
                 _ => {
-                    if let Some(task) = &self.connect_task {
+                    if let Some(task) = &self.net_ctrl.connect_task {
                         self.ui
                             .i18n
                             .tf("rustcraft.connection.connecting", &[&task.address])
-                    } else if self.connection.is_some() {
+                    } else if self.net_ctrl.connection.is_some() {
                         if self
+                            .net_ctrl
                             .connection
                             .as_ref()
                             .map(|connection| {
@@ -1214,17 +1277,17 @@ impl App {
                         self.ui.t("rustcraft.connection.notConnected")
                     }
                 }
-            };
+            });
         }
-        if multiplayer_open {
-            renderer.state.server_refreshing = self.server_refresh_task.is_some();
+        if flags.multiplayer_open {
+            renderer.state.account.set_server_refreshing(self.net_ctrl.server_refresh_task.is_some());
             // Only rebuild when count or key fields changed.
-            if renderer.state.server_list.len() != self.servers.servers.len()
+            if renderer.state.server_list.server_list().len() != self.servers.servers.len()
                 || self
                     .servers
                     .servers
                     .iter()
-                    .zip(renderer.state.server_list.iter())
+                    .zip(renderer.state.server_list.server_list().iter())
                     .any(|(a, b)| {
                         a.address != b.address
                             || a.status.ping_ms != b.ping_ms
@@ -1232,7 +1295,7 @@ impl App {
                             || a.status.players_online != b.players_online
                     })
             {
-                renderer.state.server_list = self
+                renderer.state.server_list.set_server_list(self
                     .servers
                     .servers
                     .iter()
@@ -1252,22 +1315,16 @@ impl App {
                             .as_ref()
                             .and_then(|f| crate::client::server_list::decode_favicon(f)),
                     })
-                    .collect();
+                    .collect());
             }
-            renderer.state.selected_server = self.selected_server;
+            renderer.state.server_list.set_selected_server(self.selected_server);
         }
-        if server_editor_open {
-            renderer
-                .state
-                .server_editor_name
-                .clone_from(&self.server_editor_name);
-            renderer
-                .state
-                .server_editor_address
-                .clone_from(&self.server_editor_address);
-            renderer.state.server_editor_address_focused = self.server_editor_address_focused;
+        if flags.server_editor_open {
+            renderer.state.server_list.server_editor_name_mut().clone_from(&self.server_editor_name);
+            renderer.state.server_list.server_editor_address_mut().clone_from(&self.server_editor_address);
+            renderer.state.server_list.set_server_editor_address_focused(self.server_editor_address_focused);
         }
-        if modding_open {
+        if flags.modding_open {
             let modding_rows = self
                 .scripts
                 .loaded_mods()
@@ -1286,82 +1343,84 @@ impl App {
             self.modding_selected = self
                 .modding_selected
                 .min(modding_rows.len().saturating_sub(1));
-            renderer.state.modding_rows = modding_rows;
-            renderer.state.modding_selected = self.modding_selected;
-            renderer
-                .state
-                .modding_status
-                .clone_from(&self.modding_status);
-            renderer.state.modding_connection_active = self.connection.is_some();
+            renderer.state.server_list.set_modding_rows(modding_rows);
+            renderer.state.server_list.set_modding_selected(self.modding_selected);
+            renderer.state.server_list.modding_status_mut().clone_from(&self.modding_status);
+            renderer.state.server_list.set_modding_connection_active(self.net_ctrl.connection.is_some());
         }
         if let Some((title, rows, locked)) = mod_config_view {
-            renderer.state.mod_config_title = Some(title);
-            renderer.state.mod_config_rows = rows;
-            renderer.state.mod_config_selected = self.mod_config_selected;
-            renderer.state.mod_config_status = self.mod_config_status.clone();
-            renderer.state.mod_config_locked = locked;
-        } else if renderer.state.mod_config_title.take().is_some() {
-            renderer.state.mod_config_rows.clear();
-            renderer.state.mod_config_locked = false;
+            renderer.state.server_list.set_mod_config_title(Some(title.clone()));
+            renderer.state.server_list.set_mod_config_rows(rows.clone());
+            renderer.state.server_list.set_mod_config_selected(self.mod_config_selected);
+            renderer.state.server_list.set_mod_config_status(self.mod_config_status.clone());
+            renderer.state.server_list.set_mod_config_locked(*locked);
+        } else if renderer.state.server_list.mod_config_title_mut().take().is_some() {
+            renderer.state.server_list.mod_config_rows_mut().clear();
+            renderer.state.server_list.set_mod_config_locked(false);
         }
-        renderer.state.max_players = self.session.max_players;
-        renderer.state.world_time = self.session.world_time;
-        renderer.state.day_time = self.session.day_time;
-        renderer.state.dimension = self.session.dimension;
-        renderer.state.raining = self.session.game_state.raining;
-        renderer.state.rain_level = self.session.game_state.rain_level;
-        renderer.state.thunder_level = self.session.game_state.thunder_level;
-        renderer.state.gamemode = self.session.gamemode;
-        if renderer.state.level_type != self.session.level_type {
-            renderer
-                .state
-                .level_type
-                .clone_from(&self.session.level_type);
+    }
+
+    fn sync_hud_gameplay(
+        &mut self,
+        target: &Option<client::interaction::TargetBlock>,
+        refresh_static: bool,
+    ) {
+        let renderer = self.renderer.as_mut().unwrap();
+        renderer.state.hud.set_max_players(self.session.max_players);
+        renderer.state.hud.set_world_time(self.session.world_time);
+        renderer.state.hud.set_day_time(self.session.day_time);
+        renderer.state.hud.set_dimension(self.session.dimension);
+        renderer.state.hud.set_raining(self.session.game_state.raining);
+        renderer.state.hud.set_rain_level(self.session.game_state.rain_level);
+        renderer.state.hud.set_thunder_level(self.session.game_state.thunder_level);
+        renderer.state.hud.set_gamemode(self.session.gamemode);
+        if *renderer.state.hud.level_type() != self.session.level_type {
+            renderer.state.hud.level_type_mut().clone_from(&self.session.level_type);
         }
-        renderer.state.spawn_position = self.session.spawn_position;
+        renderer.state.hud.set_spawn_position(self.session.spawn_position);
 
         // Health animation
         let current_health = self.session.health;
-        if (current_health - renderer.state.health).abs() > 0.01 {
-            renderer.state.prev_health = renderer.state.health;
-            renderer.state.health_timer = 20;
+        if (current_health - renderer.state.hud.health()).abs() > 0.01 {
+            renderer.state.hud.set_prev_health(renderer.state.hud.health());
+            renderer.state.hud.set_health_timer(20);
         }
-        renderer.state.health = current_health;
+        renderer.state.hud.set_health(current_health);
 
         // Food animation
-        if renderer.state.food != self.session.food {
-            renderer.state.prev_food = renderer.state.food;
-            renderer.state.food_timer = 10;
+        if renderer.state.hud.food() != self.session.food {
+            renderer.state.hud.set_prev_food(renderer.state.hud.food());
+            renderer.state.hud.set_food_timer(10);
         }
 
         // Armor from inventory
-        renderer.state.armor_points = crate::client::armor::total_armor_points(&self.inventory);
+        renderer.state.hud.set_armor_points(crate::client::armor::total_armor_points(&self.inventory));
 
         // Absorption from potion effect
-        renderer.state.absorption = self
+        renderer.state.hud.set_absorption(self
             .player
             .active_effects
             .iter()
             .find(|e| e.effect_id == 22)
             .map(|e| (e.amplifier as f32 + 1.0) * 4.0)
-            .unwrap_or(0.0);
+            .unwrap_or(0.0));
 
-        renderer.state.food = self.session.food;
-        renderer.state.saturation = self.session.saturation;
+        renderer.state.hud.set_food(self.session.food);
+        renderer.state.hud.set_saturation(self.session.saturation);
 
         // Decay animation timers
-        if renderer.state.health_timer > 0 {
-            renderer.state.health_timer -= 1;
+        if renderer.state.hud.health_timer() > 0 {
+            renderer.state.hud.set_health_timer(renderer.state.hud.health_timer() - 1);
         }
-        if renderer.state.food_timer > 0 {
-            renderer.state.food_timer -= 1;
+        if renderer.state.hud.food_timer() > 0 {
+            renderer.state.hud.set_food_timer(renderer.state.hud.food_timer() - 1);
         }
-        renderer.state.experience_bar = self.session.experience_bar;
-        renderer.state.experience_level = self.session.experience_level;
-        renderer.state.experience_total = self.session.experience_total;
-        renderer.state.chat_open = self.chat_open;
+        renderer.state.hud.set_experience_bar(self.session.experience_bar);
+        renderer.state.hud.set_experience_level(self.session.experience_level);
+        renderer.state.hud.set_experience_total(self.session.experience_total);
+        renderer.state.hud.set_chat_open(self.chat_open);
         if self.chat_open {
-            renderer.state.chat_input.clone_from(&self.chat_input);
+            renderer.state.hud.chat_input_mut().clone_from(&self.chat_input);
         }
         let localized_chat_lines = self
             .session
@@ -1376,17 +1435,17 @@ impl App {
                     .unwrap_or_else(|| text.clone())
             })
             .collect::<Vec<_>>();
-        if self.chat_open || renderer.state.chat_lines != localized_chat_lines {
+        if self.chat_open || *renderer.state.hud.chat_lines() != localized_chat_lines {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs_f64();
             if self.chat_open {
-                renderer.state.chat_visible_time = now;
+                renderer.state.hud.set_chat_visible_time(now);
             }
-            if renderer.state.chat_lines != localized_chat_lines {
-                renderer.state.chat_lines.clone_from(&localized_chat_lines);
-                renderer.state.chat_faces = self
+            if renderer.state.hud.chat_lines() != &localized_chat_lines {
+                renderer.state.hud.chat_lines_mut().clone_from(&localized_chat_lines);
+                renderer.state.hud.set_chat_faces(self
                     .session
                     .chat_senders
                     .iter()
@@ -1400,91 +1459,79 @@ impl App {
                             ))
                         })
                     })
-                    .collect();
+                    .collect());
                 // Keep messages visible only when a new chat state arrives.
-                renderer.state.chat_last_message_time = now;
+                renderer.state.hud.set_chat_last_message_time(now);
             }
         }
-        let sign_editor_was_open = renderer.state.sign_editor_open;
-        renderer.state.sign_editor_open = self.session.sign_editor.is_some();
+        let sign_editor_was_open = renderer.state.hud.sign_editor_open();
+        renderer.state.hud.set_sign_editor_open(self.session.sign_editor.is_some());
         if let Some(editor) = &self.session.sign_editor {
-            renderer.state.sign_editor_lines = editor.lines.clone();
-            renderer.state.sign_editor_active_line = editor.active_line;
+            renderer.state.hud.set_sign_editor_lines(editor.lines.clone());
+            renderer.state.hud.set_sign_editor_active_line(editor.active_line);
         } else if sign_editor_was_open {
-            renderer.state.sign_editor_lines = Default::default();
-            renderer.state.sign_editor_active_line = 0;
+            renderer.state.hud.set_sign_editor_lines(Default::default());
+            renderer.state.hud.set_sign_editor_active_line(0);
         }
-        renderer.state.book_editor_open = self.book_editor.is_some();
+        renderer.state.hud.set_book_editor_open(self.book_editor.is_some());
         if let Some(editor) = &self.book_editor {
-            renderer.state.book_pages.clone_from(&editor.pages);
-            renderer.state.book_page = editor.page;
-            renderer.state.book_signing = editor.signing;
-            renderer.state.book_title.clone_from(&editor.title);
+            renderer.state.hud.book_pages_mut().clone_from(&editor.pages);
+            renderer.state.hud.set_book_page(editor.page);
+            renderer.state.hud.set_book_signing(editor.signing);
+            renderer.state.hud.book_title_mut().clone_from(&editor.title);
         } else {
-            renderer.state.book_pages.clear();
-            renderer.state.book_page = 0;
-            renderer.state.book_signing = false;
-            renderer.state.book_title.clear();
+            renderer.state.hud.book_pages_mut().clear();
+            renderer.state.hud.set_book_page(0);
+            renderer.state.hud.set_book_signing(false);
+            renderer.state.hud.book_title_mut().clear();
         }
-        renderer.state.player_list_open = self.player_list_open;
+        renderer.state.hud.set_player_list_open(self.player_list_open);
         if self.player_list_open {
-            renderer
-                .state
-                .tab_header
-                .clone_from(&self.session.tab_header);
-            renderer
-                .state
-                .tab_footer
-                .clone_from(&self.session.tab_footer);
+            renderer.state.hud.tab_header_mut().clone_from(&self.session.tab_header);
+            renderer.state.hud.tab_footer_mut().clone_from(&self.session.tab_footer);
         }
-        if renderer.state.action_bar != self.session.action_bar {
-            renderer
-                .state
-                .action_bar
-                .clone_from(&self.session.action_bar);
+        if *renderer.state.hud.action_bar() != self.session.action_bar {
+            renderer.state.hud.action_bar_mut().clone_from(&self.session.action_bar);
         }
-        if renderer.state.title_text != self.session.title.title {
-            renderer
-                .state
-                .title_text
-                .clone_from(&self.session.title.title);
+        if *renderer.state.hud.title_text() != self.session.title.title {
+            renderer.state.hud.title_text_mut().clone_from(&self.session.title.title);
         }
-        if renderer.state.subtitle_text != self.session.title.subtitle {
-            renderer
-                .state
-                .subtitle_text
-                .clone_from(&self.session.title.subtitle);
+        if *renderer.state.hud.subtitle_text() != self.session.title.subtitle {
+            renderer.state.hud.subtitle_text_mut().clone_from(&self.session.title.subtitle);
         }
-        renderer.state.title_alpha = self.session.title.alpha();
+        renderer.state.hud.set_title_alpha(self.session.title.alpha());
         if self.last_scoreboard_generation != self.session.scoreboard_generation {
             self.last_scoreboard_generation = self.session.scoreboard_generation;
             let (sidebar_title, sidebar_lines) = self.session.sidebar_lines();
-            renderer.state.sidebar_title = sidebar_title;
-            renderer.state.sidebar_lines = sidebar_lines
+            renderer.state.hud.set_sidebar_title(sidebar_title);
+            renderer.state.hud.set_sidebar_lines(sidebar_lines
                 .into_iter()
                 .map(|line| crate::render::SidebarLine {
                     display: line.display,
                     score: line.score,
                 })
-                .collect();
+                .collect());
         }
-        renderer.state.world_border_center = [
+        renderer.state.hud.set_world_border_center([
             self.session.world_border.center_x,
             self.session.world_border.center_z,
-        ];
-        renderer.state.world_border_diameter = self.session.world_border.diameter;
-        renderer.state.world_border_warning_blocks = self.session.world_border.warning_blocks;
-        if renderer.state.server_brand != self.session.server_brand {
-            renderer
-                .state
-                .server_brand
-                .clone_from(&self.session.server_brand);
+        ]);
+        renderer.state.hud.set_world_border_diameter(self.session.world_border.diameter);
+        renderer.state.hud.set_world_border_warning_blocks(self.session.world_border.warning_blocks);
+        if *renderer.state.server_list.server_brand() != self.session.server_brand {
+            renderer.state.server_list.server_brand_mut().clone_from(&self.session.server_brand);
         }
-        renderer.state.resource_pack_status = self
+        renderer.state.server_list.set_resource_pack_status(self
             .session
             .resource_pack
             .as_ref()
-            .map(|pack| format!("{} {}", pack.status, pack.hash));
+            .map(|pack| format!("{} {}", pack.status, pack.hash)));
+
+        let _ = refresh_static; // used by caller for player list sync
+    }
+
+    fn sync_player_list(&mut self, refresh_static: bool) {
+        let renderer = self.renderer.as_mut().unwrap();
         if self.last_player_list_generation != self.session.player_list_generation
             || self.config.tab_player_avatars
         {
@@ -1509,40 +1556,48 @@ impl App {
                 })
                 .collect();
             rows.sort_by_cached_key(|entry| entry.0.to_lowercase());
-            renderer.state.player_list = rows
+            renderer.state.hud.set_player_list(rows
                 .iter()
                 .map(|(name, ping, gamemode, _)| (name.clone(), *ping, *gamemode))
-                .collect();
-            renderer.state.player_list_faces = rows
+                .collect());
+            renderer.state.hud.set_player_list_faces(rows
                 .into_iter()
                 .filter_map(|(_, _, _, face)| face)
-                .collect();
+                .collect());
         }
-        renderer.state.entity_count = self.entities.count();
+        renderer.state.frame_profile.set_entity_count(self.entities.count());
         let sound_event_count = self.audio.played_count();
-        if renderer.state.sound_event_count != sound_event_count {
-            renderer.state.sound_event_count = sound_event_count;
-            renderer.state.recent_sounds = self
+        if renderer.state.hud.sound_event_count() != sound_event_count {
+            renderer.state.hud.set_sound_event_count(sound_event_count);
+            renderer.state.hud.set_recent_sounds(self
                 .audio
                 .recent()
                 .rev()
                 .take(3)
                 .map(|event| format!("{} {:.1}x {:.2}", event.name, event.volume, event.pitch))
-                .collect();
+                .collect());
         }
+        let _ = refresh_static;
+    }
 
+    fn sync_entity_billboards(
+        &mut self,
+        entity_hash: u64,
+        refresh_static: bool,
+    ) {
+        let renderer = self.renderer.as_mut().unwrap();
         // Only rebuild entity billboards when entity state actually changed.
         if entity_hash != self.last_entity_hash {
             self.last_entity_hash = entity_hash;
-            renderer.state.entity_billboard_generation =
-                renderer.state.entity_billboard_generation.wrapping_add(1);
-            renderer.state.entity_billboards = self
+            renderer.state.frame_profile.set_entity_billboard_generation(
+                renderer.state.frame_profile.entity_billboard_generation().wrapping_add(1));
+            renderer.state.hud.set_entity_billboards(self
                 .entities
-                .entities
-                .values()
-                .map(|entity| {
+                .iter()
+                .into_iter()
+                .map(|(_, entity)| {
                     entity_billboard(
-                        entity,
+                        &entity,
                         &self.session,
                         &self.world,
                         self.player_skin_slims
@@ -1552,7 +1607,7 @@ impl App {
                         self.player_cape_ready.contains(&entity.entity_id),
                     )
                 })
-                .collect();
+                .collect());
         }
         // Light changes when the world around an entity changes (torch placed,
         // block broken, etc.). Re-sampling every frame would invalidate the
@@ -1560,8 +1615,8 @@ impl App {
         // starving the rest of the rendering pipeline and making scoreboard /
         // UI updates feel unresponsive. A once-per-tick update matches vanilla's
         // 20 Hz lightmap refresh and lets the mesh cache stay hit-warm.
-        if refresh_static_render_state {
-            for billboard in &mut renderer.state.entity_billboards {
+        if refresh_static {
+            for billboard in renderer.state.hud.entity_billboards_mut() {
                 let bx = billboard.position[0].floor() as i32;
                 let by = billboard.position[1].floor() as i32;
                 let bz = billboard.position[2].floor() as i32;
@@ -1570,10 +1625,17 @@ impl App {
                 billboard.block_light = light.block;
             }
         }
+    }
+
+    fn sync_skull_and_particles(
+        &mut self,
+        skull_hash: Option<u64>,
+    ) {
+        let renderer = self.renderer.as_mut().unwrap();
         if let Some(skull_hash) = skull_hash {
             if skull_hash != self.last_skull_hash {
                 self.last_skull_hash = skull_hash;
-                renderer.state.skull_entries = self
+                renderer.state.hud.set_skull_entries(self
                     .world
                     .skulls
                     .iter()
@@ -1584,7 +1646,7 @@ impl App {
                         rotation: skull.rotation,
                         skin_key: skull_skin_key(skull),
                     })
-                    .collect();
+                    .collect());
             }
         }
         if self.config.particles.enabled() {
@@ -1592,7 +1654,14 @@ impl App {
         } else {
             renderer.set_particles(&[], self.particles.generation());
         }
+    }
 
+    fn sync_local_player_and_hand(
+        &mut self,
+        _target: &Option<client::interaction::TargetBlock>,
+        _refresh_static: bool,
+    ) {
+        let renderer = self.renderer.as_mut().unwrap();
         if self.player.camera_mode != 0 {
             let mut local_equipment: [Option<(u16, u16)>; 5] = Default::default();
             if let Some(slot) = self.inventory.slots.get(self.inventory.selected) {
@@ -1638,7 +1707,7 @@ impl App {
                 item_id: None,
                 item_damage: local_equipment[0].map(|e| e.1),
                 item_nbt: None,
-                swing_progress: renderer.state.hand_swing_progress,
+                swing_progress: renderer.state.hud.hand_swing_progress(),
                 skin_key: Some("player/local".to_string()),
                 slim: self.local_skin.slim_arms || self.local_player_model.slim_arms,
                 skin_parts_mask: self.session.skin_parts,
@@ -1677,42 +1746,33 @@ impl App {
                 velocity: [0.0, 0.0, 0.0],
                 hurt_alpha: 0.0,
                 death_alpha: 0.0,
-                swing_alpha: renderer.state.hand_swing_progress,
+                swing_alpha: renderer.state.hud.hand_swing_progress(),
                 critical_alpha: 0.0,
                 visual: crate::entity::EntityVisualState::default(),
             };
-            renderer
-                .state
-                .entity_billboards
-                .retain(|billboard| billboard.entity_id != i32::MIN);
-            renderer
-                .state
-                .entity_billboards
-                .push(local_billboard.clone());
-            renderer.state.local_player_billboard = Some(local_billboard);
+            renderer.state.hud.entity_billboards_mut().retain(|billboard| billboard.entity_id != i32::MIN);
+            renderer.state.hud.entity_billboards_mut().push(local_billboard.clone());
+            renderer.state.hud.set_local_player_billboard(Some(local_billboard));
         } else {
-            renderer
-                .state
-                .entity_billboards
-                .retain(|billboard| billboard.entity_id != i32::MIN);
-            renderer.state.local_player_billboard = None;
+            renderer.state.hud.entity_billboards_mut().retain(|billboard| billboard.entity_id != i32::MIN);
+            renderer.state.hud.set_local_player_billboard(None);
         }
 
-        renderer.state.camera_mode = self.player.camera_mode;
-        renderer.state.first_person_arm_yaw = self.player.render_arm_yaw;
-        renderer.state.first_person_arm_pitch = self.player.render_arm_pitch;
-        renderer.state.first_person_prev_arm_yaw = self.player.prev_render_arm_yaw;
-        renderer.state.first_person_prev_arm_pitch = self.player.prev_render_arm_pitch;
-        renderer.state.local_model_parts = self.local_player_model.parts.len();
+        renderer.state.settings.set_camera_mode(self.player.camera_mode);
+        renderer.state.hud.set_first_person_arm_yaw(self.player.render_arm_yaw);
+        renderer.state.hud.set_first_person_arm_pitch(self.player.render_arm_pitch);
+        renderer.state.hud.set_first_person_prev_arm_yaw(self.player.prev_render_arm_yaw);
+        renderer.state.hud.set_first_person_prev_arm_pitch(self.player.prev_render_arm_pitch);
+        renderer.state.settings.set_local_model_parts(self.local_player_model.parts.len());
         let (skin_w, skin_h) = self.local_skin.dimensions();
-        renderer.state.local_skin_size = [skin_w, skin_h];
+        renderer.state.settings.set_local_skin_size([skin_w, skin_h]);
         let new_slim = self.local_skin.slim_arms || self.local_player_model.slim_arms;
         if self.local_skin_dirty {
             self.local_skin_dirty = false;
-            renderer.state.local_skin_slim = new_slim;
-            renderer.state.local_skin_face = self.local_skin.face_pixels();
-            renderer.state.local_skin_preview = self.local_skin.preview_pixels();
-            renderer.state.local_skin = self.local_skin.clone();
+            renderer.state.settings.set_local_skin_slim(new_slim);
+            renderer.state.settings.set_local_skin_face(self.local_skin.face_pixels());
+            renderer.state.settings.set_local_skin_preview(self.local_skin.preview_pixels());
+            renderer.state.settings.set_local_skin(self.local_skin.clone());
             renderer.update_skin_gpu();
             if let Some(ref pixels) = self.local_cape_pixels {
                 renderer.upload_cape_to_atlas(pixels);
@@ -1743,7 +1803,7 @@ impl App {
         );
         // Continuous mining swing: re-trigger when previous swing completes
         if self.attack_held
-            && renderer.state.hand_swing_timer <= 0.0
+            && renderer.state.hud.hand_swing_timer() <= 0.0
             && (self.dig.active_pos().is_some()
                 || (self.item_use_active
                     && super::block_interaction::is_sword(selected_item.item_id)))
@@ -1751,8 +1811,8 @@ impl App {
             renderer.trigger_hand_swing();
         }
         let held_id = selected_item.item_id;
-        let previous_hand_use_kind = renderer.state.hand_use_kind;
-        renderer.state.hand_use_kind = if self.item_use_active {
+        let previous_hand_use_kind = renderer.state.hud.hand_use_kind();
+        renderer.state.hud.set_hand_use_kind(if self.item_use_active {
             match held_id {
                 267 | 268 | 272 | 276 | 283 => 1, // swords: BLOCK
                 373 => 3,                         // potion: DRINK
@@ -1761,7 +1821,7 @@ impl App {
             }
         } else {
             0
-        };
+        });
 
         if held_id == 261 && self.item_use_active {
             let pull = (self.item_use_timer / 1.0).min(1.0);
@@ -1772,24 +1832,20 @@ impl App {
             } else {
                 1
             };
-            renderer.state.hand_item_damage = bow_damage;
+            renderer.state.hud.set_hand_item_damage(bow_damage);
         } else if held_id == 261 {
             // Not drawing: standby icon. Durability wear must not select a
             // pulling frame (those are keyed by damage 1-3).
-            renderer.state.hand_item_damage = 0;
+            renderer.state.hud.set_hand_item_damage(0);
         }
         let alpha = self.tick_timer.alpha();
-        renderer.state.hand_use_progress =
-            self.prev_item_use_timer + (self.item_use_timer - self.prev_item_use_timer) * alpha;
-        renderer
-            .state
-            .active_potion_effects
-            .clone_from(&self.player.active_effects);
-        renderer.state.time = std::time::SystemTime::now()
+        renderer.state.hud.set_hand_use_progress(self.prev_item_use_timer + (self.item_use_timer - self.prev_item_use_timer) * alpha);
+        renderer.state.hud.active_potion_effects_mut().clone_from(&self.player.active_effects);
+        renderer.state.frame_profile.set_time(std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_secs_f32();
-        let use_kind = renderer.state.hand_use_kind;
+            .as_secs_f32());
+        let use_kind = renderer.state.hud.hand_use_kind();
         let now = std::time::Instant::now();
         const SCRIPT_ANIMATION_INTERVAL: std::time::Duration =
             std::time::Duration::from_micros(8_333); // 120 Hz
@@ -1797,7 +1853,7 @@ impl App {
                                                      // render frame that enters/leaves BLOCK can bake a mesh with the
                                                      // previous script matrix and vanilla flags, then visibly snap once the
                                                      // 120 Hz script throttle catches up.
-        if renderer.state.hand_use_kind != previous_hand_use_kind
+        if renderer.state.hud.hand_use_kind() != previous_hand_use_kind
             || now.duration_since(self.last_script_frame) >= SCRIPT_ANIMATION_INTERVAL
         {
             self.last_script_frame = now;
@@ -1816,12 +1872,12 @@ impl App {
                 use_action: crate::render::first_person::UseAction::from_use_kind(use_kind),
                 equip_progress: 1.0 - renderer.hand_equip_progress,
                 previous_equip_progress: 1.0 - renderer.hand_equip_progress,
-                swing_progress: renderer.state.hand_swing_progress,
-                previous_swing_progress: renderer.state.hand_swing_progress,
-                swinging: renderer.state.hand_swing_timer > 0.0
-                    || renderer.state.hand_swing_progress > 0.0,
+                swing_progress: renderer.state.hud.hand_swing_progress(),
+                previous_swing_progress: renderer.state.hud.hand_swing_progress(),
+                swinging: renderer.state.hud.hand_swing_timer() > 0.0
+                    || renderer.state.hud.hand_swing_progress() > 0.0,
                 swing_duration_ticks: 6,
-                use_progress: renderer.state.hand_use_progress,
+                use_progress: renderer.state.hud.hand_use_progress(),
                 use_ticks: (self.item_use_timer.max(0.0) * 20.0).floor() as u32,
                 remaining_use_ticks: self.item_use_timer.max(0.0).floor() as u32,
                 max_use_ticks: match use_kind {
@@ -1846,9 +1902,9 @@ impl App {
                 aspect_ratio: self.player.camera.aspect,
             };
             let animation_transforms = self.scripts.dispatch_first_person(&animation_context);
-            renderer.state.first_person_arm_transform = animation_transforms.combined_arm();
-            renderer.state.first_person_item_transform = animation_transforms.combined_item();
-            renderer.state.fp_vanilla_flags = animation_transforms.vanilla_flags.clone();
+            renderer.state.hud.set_first_person_arm_transform(animation_transforms.combined_arm());
+            renderer.state.hud.set_first_person_item_transform(animation_transforms.combined_item());
+            renderer.state.hud.set_fp_vanilla_flags(animation_transforms.vanilla_flags.clone());
         }
 
         const SCRIPT_HUD_INTERVAL: std::time::Duration = std::time::Duration::from_micros(16_667); // 60 Hz
@@ -1872,46 +1928,47 @@ impl App {
                 viewport_width: viewport.width,
                 viewport_height: viewport.height,
             };
-            renderer.state.script_hud_before_commands = self
+            renderer.state.hud.set_script_hud_before_commands(self
                 .scripts
-                .dispatch_render("render.hud.before", script_frame);
+                .dispatch_render("render.hud.before", script_frame));
             let remaining_commands =
-                4096usize.saturating_sub(renderer.state.script_hud_before_commands.len());
-            renderer.state.script_hud_commands = self
+                4096usize.saturating_sub(renderer.state.hud.script_hud_before_commands().len());
+            renderer.state.hud.set_script_hud_commands(self
                 .scripts
-                .dispatch_render("render.hud.after", script_frame);
-            renderer
-                .state
-                .script_hud_commands
-                .truncate(remaining_commands);
+                .dispatch_render("render.hud.after", script_frame));
+            renderer.state.hud.script_hud_commands_mut().truncate(remaining_commands);
         } else if self.hud_hidden
-            && (!renderer.state.script_hud_before_commands.is_empty()
-                || !renderer.state.script_hud_commands.is_empty())
+            && (!renderer.state.hud.script_hud_before_commands().is_empty()
+                || !renderer.state.hud.script_hud_commands().is_empty())
         {
             // Hiding the vanilla HUD must also hide mod-rendered HUD commands,
             // and avoids retaining a stale draw list until F1 is pressed again.
-            renderer.state.script_hud_before_commands.clear();
-            renderer.state.script_hud_commands.clear();
+            renderer.state.hud.script_hud_before_commands_mut().clear();
+            renderer.state.hud.script_hud_commands_mut().clear();
         }
+    }
 
-        if self.inventory_open {
-            for i in 0..36 {
-                renderer.state.inventory_slots[i] =
-                    self.inventory.slots[i].view_with_meta(Some(&self.inventory.slot_meta[i]));
-            }
-            for i in 0..4 {
-                renderer.state.inventory_armor_slots[i] =
-                    self.inventory.armor[i].view_with_meta(Some(&self.inventory.armor_meta[i]));
-            }
-            for i in 0..5 {
-                renderer.state.inventory_crafting_slots[i] = self.inventory.crafting[i]
-                    .view_with_meta(Some(&self.inventory.crafting_meta[i]));
-            }
-            renderer.state.inventory_cursor_slot = self
-                .inventory
-                .cursor
-                .view_with_meta(Some(&self.inventory.cursor_meta));
+    fn sync_inventory_slots(&mut self) {
+        if !self.inventory_open {
+            return;
         }
+        let renderer = self.renderer.as_mut().unwrap();
+        for i in 0..36 {
+            renderer.state.inventory.inventory_slots_mut()[i] =
+                self.inventory.slots[i].view_with_meta(Some(&self.inventory.slot_meta[i]));
+        }
+        for i in 0..4 {
+            renderer.state.inventory.inventory_armor_slots_mut()[i] =
+                self.inventory.armor[i].view_with_meta(Some(&self.inventory.armor_meta[i]));
+        }
+        for i in 0..5 {
+            renderer.state.inventory.inventory_crafting_slots_mut()[i] = self.inventory.crafting[i]
+                .view_with_meta(Some(&self.inventory.crafting_meta[i]));
+        }
+        renderer.state.inventory.set_inventory_cursor_slot(self
+            .inventory
+            .cursor
+            .view_with_meta(Some(&self.inventory.cursor_meta)));
     }
 
     fn collect_pending_player_skins(
@@ -1950,9 +2007,9 @@ impl App {
         let session = &self.session;
         let skin_cache = &mut self.skin_cache;
         let skin_profiles = &mut self.player_skin_profiles;
-        let entities = &self.entities.entities;
+        let entities = &self.entities;
 
-        for entity in entities.values() {
+        for (_, entity) in entities.iter() {
             let crate::entity::EntityData::Player {
                 name,
                 skin_property: entity_skin_property,
@@ -1991,7 +2048,7 @@ impl App {
                 self.player_cape_ready.insert(entity.entity_id);
             }
             pending.push(crate::render::PendingPlayerSkin {
-                key: player_skin_key(entity),
+                key: player_skin_key(&entity),
                 skin: std::sync::Arc::clone(&snapshot.skin),
                 content_hash: snapshot.content_hash,
                 cape_pixels: cape
@@ -2001,9 +2058,9 @@ impl App {
             });
         }
         skin_profiles.retain(|entity_id, _| {
-            entities.get(entity_id).is_some_and(|entity| {
-                matches!(&entity.data, crate::entity::EntityData::Player { .. })
-            })
+            entities
+                .get(*entity_id)
+                .is_some_and(|entity| matches!(&entity.data, crate::entity::EntityData::Player { .. }))
         });
 
         for skull in self
@@ -2060,7 +2117,7 @@ impl App {
         let mut xor = 0u64;
         let mut count = 0usize;
 
-        for entity in self.entities.entities.values() {
+        for (_, entity) in self.entities.iter() {
             let crate::entity::EntityData::Player { name, .. } = &entity.data else {
                 continue;
             };
@@ -2117,9 +2174,9 @@ impl App {
     fn compute_entity_hash(&self) -> u64 {
         use std::hash::Hasher;
         let mut h = fnv::FnvHasher::default();
-        h.write_usize(self.entities.entities.len());
+        h.write_usize(self.entities.count());
         h.write_u64(self.session.player_profile_generation);
-        for entity in self.entities.entities.values() {
+        for (_, entity) in self.entities.iter() {
             h.write_i32(entity.entity_id);
             h.write_u32(entity.entity_type as u32);
             h.write_i64((entity.render_position.x * 20.0) as i64);
@@ -2131,10 +2188,44 @@ impl App {
             h.write_i32((entity.distance_walked_modified * 100.0) as i32);
             h.write_i32((entity.camera_yaw * 1000.0) as i32);
             h.write_i32((entity.yaw * 10.0) as i32);
+            h.write_i32((entity.body_yaw * 10.0) as i32);
             h.write_i32((entity.head_yaw * 10.0) as i32);
             h.write_i32((entity.pitch * 10.0) as i32);
             h.write_u32((entity.hurt_time * 5.0) as u32);
             h.write_u32(entity.metadata.len() as u32);
+            // Visual variants drive atlas_name_for_entity (wolf angry, horse
+            // color, villager profession, …). Omitting them left billboards
+            // stale after EntityMetadata packets and scrambled skins.
+            h.write_u32(entity.visual.is_child as u32);
+            h.write_u8(entity.visual.skeleton_type);
+            h.write_u32(entity.visual.zombie_villager as u32);
+            h.write_u32(entity.visual.zombie_converting as u32);
+            h.write_u32(entity.visual.wolf_tamed as u32);
+            h.write_u32(entity.visual.wolf_angry as u32);
+            h.write_u8(entity.visual.wolf_collar);
+            h.write_u8(entity.visual.ocelot_skin);
+            h.write_u8(entity.visual.horse_type);
+            h.write_u32(entity.visual.horse_variant);
+            h.write_u8(entity.visual.horse_armor);
+            h.write_u32(entity.visual.guardian_elder as u32);
+            h.write_u8(entity.visual.slime_size);
+            h.write_u8(entity.visual.villager_profession);
+            h.write_u8(entity.visual.sheep_color);
+            h.write_u8(entity.visual.rabbit_type);
+            h.write_u32(entity.visual.pig_saddled as u32);
+            h.write_u32(entity.visual.creeper_charged as u32);
+            h.write_u8(entity.visual.armor_stand_flags);
+            h.write_u8(entity.skin_parts);
+            for slot in &entity.equipment {
+                match slot {
+                    Some(s) => {
+                        h.write_u8(1);
+                        h.write_i16(s.item_id);
+                        h.write_i16(s.damage);
+                    }
+                    None => h.write_u8(0),
+                }
+            }
             h.write_u32(
                 self.player_skin_slims
                     .get(&entity.entity_id)
@@ -2349,7 +2440,7 @@ fn entity_billboard(
         riding: entity.vehicle_id.is_some(),
         name_visible,
         age_ticks: entity.ticks_alive as f32,
-        hover_start: entity.hover_start,
+        hover_start: entity.hover_start(),
         velocity: [entity.velocity.x, entity.velocity.y, entity.velocity.z],
         hurt_alpha: (entity.hurt_time / 0.45).clamp(0.0, 1.0),
         // `death_time` counts down, while the model needs elapsed time. Status

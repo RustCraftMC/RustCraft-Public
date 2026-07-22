@@ -9,11 +9,11 @@ impl Renderer {
         widget_gui: &mut GuiVertexBuilder,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        if !self.state.book_editor_open {
+        if !self.state.hud.book_editor_open() {
             return;
         }
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
         let font_sz = metrics.font_sz * 0.68;
         let book_w = 192.0 * gs;
@@ -42,7 +42,7 @@ impl Renderer {
             [0.48, 0.31, 0.16, 0.42],
         );
 
-        if self.state.book_signing {
+        if self.state.hud.book_signing() {
             self.draw_book_signing(metrics, widget_gui, font_gui, x, y, book_w, book_h, font_sz);
         } else {
             self.draw_book_page(
@@ -69,10 +69,7 @@ impl Renderer {
         font_sz: f32,
     ) {
         let gs = metrics.gs;
-        let page = self
-            .state
-            .book_pages
-            .get(self.state.book_page)
+        let page = self.state.hud.book_pages().get(self.state.hud.book_page())
             .map(String::as_str)
             .unwrap_or("");
         let hovered = metrics.mouse_pos[0] >= page_x
@@ -122,15 +119,15 @@ impl Renderer {
             y + 145.0 * gs,
             &format!(
                 "Page {} of {}",
-                self.state.book_page + 1,
-                self.state.book_pages.len()
+                self.state.hud.book_page() + 1,
+                self.state.hud.book_pages().len()
             ),
             font_sz * 0.9,
             [0.25, 0.15, 0.08, 1.0],
         );
 
         let button_y = y + book_h - 25.0 * gs;
-        if self.state.book_page > 0 {
+        if self.state.hud.book_page() > 0 {
             draw_button(
                 metrics,
                 widget_gui,
@@ -218,7 +215,7 @@ impl Renderer {
             &mut self.font,
             x + book_w * 0.5,
             title_y + 4.0 * gs,
-            &format!("{}_", self.state.book_title),
+            &format!("{}_", self.state.hud.book_title()),
             font_sz,
             [0.14, 0.08, 0.03, 1.0],
         );
@@ -232,7 +229,7 @@ impl Renderer {
             "Cancel",
             &mut self.font,
         );
-        if !self.state.book_title.trim().is_empty() {
+        if !self.state.hud.book_title().trim().is_empty() {
             draw_button(
                 metrics,
                 widget_gui,

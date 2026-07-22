@@ -1057,7 +1057,12 @@ impl Player {
         ms *= 0.98;
 
         if !has_chunk {
-            return;
+            // Do NOT freeze the whole tick: that made walking into an unloaded
+            // column lock all movement until death. Missing chunks are Air for
+            // collision, so hold vertical motion only to avoid void fall while
+            // the column is still deferred on the network thread.
+            self.velocity.y = 0.0;
+            self.on_ground = true;
         }
 
         // EntityPlayerSP selects sprint before movement and
@@ -1665,12 +1670,12 @@ impl Player {
         local_entity_id: Option<i32>,
     ) -> Vec<Aabb> {
         entities
-            .entities
-            .values()
-            .filter(|entity| entity.entity_type == crate::entity::EntityType::Boat)
-            .filter(|entity| Some(entity.entity_id) != self.vehicle_id)
-            .filter(|entity| entity.vehicle_id != local_entity_id)
-            .map(|entity| {
+            .iter()
+            .into_iter()
+            .filter(|(_, entity)| entity.entity_type == crate::entity::EntityType::Boat)
+            .filter(|(_, entity)| Some(entity.entity_id) != self.vehicle_id)
+            .filter(|(_, entity)| entity.vehicle_id != local_entity_id)
+            .map(|(_, entity)| {
                 let position = Point3::new(
                     entity.position.x as f64,
                     entity.position.y as f64,

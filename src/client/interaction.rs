@@ -191,11 +191,11 @@ pub fn target_entity_from(
 ) -> Option<TargetEntity> {
     let direction = direction.normalize();
     entities
-        .entities
-        .values()
-        .filter(|entity| Some(entity.entity_id) != skip_entity_id)
-        .filter(|entity| entity.entity_type.can_be_collided_with())
-        .filter_map(|entity| {
+        .iter()
+        .into_iter()
+        .filter(|(_, entity)| Some(entity.entity_id) != skip_entity_id)
+        .filter(|(_, entity)| entity.entity_type.can_be_collided_with())
+        .filter_map(|(_, entity)| {
             let (width, height) = entity.entity_type.bounding_box();
             let half = width * 0.5 + 0.12;
             let min = [

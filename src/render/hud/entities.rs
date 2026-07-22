@@ -31,15 +31,15 @@ impl Renderer {
         font_gui: &mut GuiVertexBuilder,
         _block_gui: &mut GuiVertexBuilder,
     ) {
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
         let font_sz = metrics.font_sz;
         let Some(camera) = self.current_camera.as_ref() else {
             return;
         };
 
-        for entity in self.state.entity_billboards.iter().take(256) {
+        for entity in self.state.hud.entity_billboards().iter().take(256) {
             let top = [
                 entity.position[0],
                 entity.position[1] + entity.height + 0.35,
@@ -50,7 +50,7 @@ impl Renderer {
             else {
                 continue;
             };
-            if depth > self.state.render_distance as f32 * 16.0 {
+            if depth > self.state.settings.render_distance() as f32 * 16.0 {
                 continue;
             }
 

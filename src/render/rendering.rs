@@ -21,6 +21,20 @@ fn append_world_mesh(
     indices.extend(source_indices.into_iter().map(|index| base + index));
 }
 
+/// Encode a sign's block position into a stable u64 key id.
+///
+/// Uses FNV hashing so the same `[i32; 3]` position always maps to the same
+/// id, letting sign atlas lookups avoid per-frame `format!` allocations on the
+/// three integer coordinates.
+fn sign_position_key_id(position: [i32; 3]) -> u64 {
+    use std::hash::Hasher;
+    let mut h = fnv::FnvHasher::default();
+    h.write_i32(position[0]);
+    h.write_i32(position[1]);
+    h.write_i32(position[2]);
+    h.finish()
+}
+
 fn upload_cached_gpu_mesh(
     device: &ash::Device,
     allocator: &mut gpu_allocator::vulkan::Allocator,
@@ -472,7 +486,7 @@ impl super::Renderer {
 
         super::resources::upload_dynamic_buffer(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             &mut self.chunk_indirect_buffers[frame],
             &mut self.chunk_indirect_allocs[frame],
             &mut self.chunk_indirect_capacities[frame],
@@ -525,39 +539,36 @@ impl super::Renderer {
     pub fn draw_frame(&mut self, camera: &Camera, menu: u32, underwater: bool, in_world: bool) {
         let t0 = std::time::Instant::now();
         self.current_camera = Some(camera.clone());
-        if self.needs_recreate {
-            self.recreate_swapchain(self.window_size);
-            if self.needs_recreate {
+        if self.swapchain.needs_recreate {
+            self.recreate_swapchain();
+            if self.swapchain.needs_recreate {
                 return;
             }
         }
 
-        let frame = self.current_frame;
-        let fence = self.in_flight_fences[frame];
+        let frame = self.swapchain.current_frame;
+        let fence = self.swapchain.in_flight_fences[frame];
 
         let t_fence_start = std::time::Instant::now();
-        unsafe {
-            self.device
-                .wait_for_fences(&[fence], true, u64::MAX)
-                .unwrap();
-        }
-        let fence_us = t_fence_start.elapsed().as_micros() as u64;
+        let fence_us = unsafe {
+            match self.device.wait_for_fences(&[fence], true, 1_000_000_000) {
+                Ok(()) => t_fence_start.elapsed().as_micros() as u64,
+                Err(e) => {
+                    log::error!("wait_for_fences failed (device likely lost): {e:?}");
+                    self.swapchain.needs_recreate = true;
+                    return;
+                }
+            }
+        };
         for command in std::mem::take(&mut self.retired_draw_cmds[frame]) {
             self.destroy_draw_cmd(command);
         }
 
         let acquire_started = std::time::Instant::now();
-        let image_index = match unsafe {
-            self.swapchain_fn.acquire_next_image(
-                self.swapchain,
-                u64::MAX,
-                self.image_available[frame],
-                vk::Fence::null(),
-            )
-        } {
+        let image_index = match self.swapchain.acquire_next_image(&self.device) {
             Ok((idx, _)) => idx,
             Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                self.recreate_swapchain(self.window_size);
+                self.recreate_swapchain();
                 return;
             }
             Err(e) => {
@@ -565,10 +576,13 @@ impl super::Renderer {
                 return;
             }
         };
-        self.state.frame_acquire_us = acquire_started.elapsed().as_micros() as u64;
+        self.state.frame_profile.set_frame_acquire_us(acquire_started.elapsed().as_micros() as u64);
 
         unsafe {
-            self.device.reset_fences(&[fence]).unwrap();
+            if let Err(e) = self.device.reset_fences(&[fence]) {
+                log::error!("reset_fences failed: {e:?}");
+                return;
+            }
         }
         self.prepare_chunk_uploads(frame);
         self.prepare_local_skin_upload(frame);
@@ -577,23 +591,23 @@ impl super::Renderer {
         let proj = camera.projection_matrix_at(camera.partial_tick);
         let view_proj = proj * view;
         let mut sky = SkyGradient::environment(
-            self.state.day_time,
-            self.state.render_distance,
-            self.state.dimension,
+            self.state.hud.day_time(),
+            self.state.settings.render_distance(),
+            self.state.hud.dimension(),
         );
-        let rain = if self.state.raining {
-            self.state.rain_level
+        let rain = if self.state.hud.raining() {
+            self.state.hud.rain_level()
         } else {
             0.0
         };
-        let thunder = if self.state.raining {
-            self.state.thunder_level
+        let thunder = if self.state.hud.raining() {
+            self.state.hud.thunder_level()
         } else {
             0.0
         };
-        let sun_brightness = SkyGradient::sun_brightness(self.state.day_time as f32, rain, thunder);
-        let storm = if self.state.raining {
-            (self.state.rain_level + self.state.thunder_level * 0.6).clamp(0.0, 1.0)
+        let sun_brightness = SkyGradient::sun_brightness(self.state.hud.day_time() as f32, rain, thunder);
+        let storm = if self.state.hud.raining() {
+            (self.state.hud.rain_level() + self.state.hud.thunder_level() * 0.6).clamp(0.0, 1.0)
         } else {
             0.0
         };
@@ -649,20 +663,23 @@ impl super::Renderer {
                 crate::world::material::GRASS_COLOR[0],
                 crate::world::material::GRASS_COLOR[1],
                 crate::world::material::GRASS_COLOR[2],
-                self.state.dimension as f32,
+                self.state.hud.dimension() as f32,
             ],
         };
-        let ualloc = &self.uniform_allocs[frame];
+        let ualloc = self.resources.uniform_alloc(frame);
         unsafe {
-            let ptr = self
-                .device
-                .map_memory(
-                    ualloc.memory(),
-                    ualloc.offset(),
-                    std::mem::size_of::<Uniforms>() as u64,
-                    vk::MemoryMapFlags::empty(),
-                )
-                .unwrap();
+            let ptr = match self.device.map_memory(
+                ualloc.memory(),
+                ualloc.offset(),
+                std::mem::size_of::<Uniforms>() as u64,
+                vk::MemoryMapFlags::empty(),
+            ) {
+                Ok(ptr) => ptr,
+                Err(e) => {
+                    log::error!("map_memory for uniforms failed: {e:?}");
+                    return;
+                }
+            };
             std::ptr::copy_nonoverlapping(
                 &uniforms as *const _ as *const u8,
                 ptr as *mut u8,
@@ -693,26 +710,26 @@ impl super::Renderer {
         let cb = self.command_buffers[frame];
 
         let t_mesh = std::time::Instant::now();
-        self.state.entity_cache_hits = 0;
-        self.state.entity_cache_misses = 0;
-        self.state.entity_visible_count = 0;
-        self.state.entity_hash_us = 0;
-        self.state.entity_lookup_us = 0;
-        self.state.entity_append_us = 0;
+        self.state.frame_profile.set_entity_cache_hits(0);
+        self.state.frame_profile.set_entity_cache_misses(0);
+        self.state.frame_profile.set_entity_visible_count(0);
+        self.state.frame_profile.set_entity_hash_us(0);
+        self.state.frame_profile.set_entity_lookup_us(0);
+        self.state.frame_profile.set_entity_append_us(0);
         self.upload_entity_meshes_cached(&frustum, camera);
-        self.state.frame_entity_us = t_mesh.elapsed().as_micros() as u64;
+        self.state.frame_profile.set_frame_entity_us(t_mesh.elapsed().as_micros() as u64);
         let t_p = std::time::Instant::now();
         self.upload_particle_mesh(camera);
-        self.state.frame_particle_us = t_p.elapsed().as_micros() as u64;
+        self.state.frame_profile.set_frame_particle_us(t_p.elapsed().as_micros() as u64);
         let t_n = std::time::Instant::now();
         self.upload_nametag_mesh(camera);
-        self.state.frame_nametag_us = t_n.elapsed().as_micros() as u64;
+        self.state.frame_profile.set_frame_nametag_us(t_n.elapsed().as_micros() as u64);
         self.prepare_entity_atlas_upload(frame);
         self.upload_block_selection();
         let t_l = std::time::Instant::now();
         self.upload_local_player_meshes(camera);
-        self.state.frame_local_us = t_l.elapsed().as_micros() as u64;
-        self.state.frame_mesh_us = t_mesh.elapsed().as_micros() as u64;
+        self.state.frame_profile.set_frame_local_us(t_l.elapsed().as_micros() as u64);
+        self.state.frame_profile.set_frame_mesh_us(t_mesh.elapsed().as_micros() as u64);
         let t_gui = std::time::Instant::now();
         let mut gui_builders = if self.gui_pipeline != vk::Pipeline::null() {
             use super::gui::GuiVertexBuilder;
@@ -721,12 +738,12 @@ impl super::Renderer {
                 std::time::Duration::from_micros(16_667); // 60 Hz
             let rebuild_gui = self.last_gui_build.elapsed() >= GUI_BUILD_INTERVAL;
 
-            let sw = self.swapchain_extent.width as f32;
-            let sh = self.swapchain_extent.height as f32;
+            let sw = self.swapchain.swapchain_extent.width as f32;
+            let sh = self.swapchain.swapchain_extent.height as f32;
             let metrics = super::gui::widgets::MenuMetrics::new(
                 sw,
                 sh,
-                self.state.gui_scale,
+                self.state.settings.gui_scale(),
                 self.gui_mouse_pos,
             );
 
@@ -805,19 +822,20 @@ impl super::Renderer {
         } else {
             None
         };
-        self.state.frame_gui_us = t_gui.elapsed().as_micros() as u64;
+        self.state.frame_profile.set_frame_gui_us(t_gui.elapsed().as_micros() as u64);
 
         let command_started = std::time::Instant::now();
         unsafe {
-            self.device
-                .begin_command_buffer(
-                    cb,
-                    &vk::CommandBufferBeginInfo {
-                        flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
-                        ..Default::default()
-                    },
-                )
-                .unwrap();
+            if let Err(e) = self.device.begin_command_buffer(
+                cb,
+                &vk::CommandBufferBeginInfo {
+                    flags: vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT,
+                    ..Default::default()
+                },
+            ) {
+                log::error!("begin_command_buffer failed: {e:?}");
+                return;
+            }
             self.record_chunk_uploads(cb, frame);
             self.record_block_animation_uploads(cb, frame);
             self.record_entity_skin_upload(cb, frame);
@@ -840,9 +858,9 @@ impl super::Renderer {
                 cb,
                 &vk::RenderPassBeginInfo {
                     render_pass: self.render_pass,
-                    framebuffer: self.framebuffers[image_index as usize],
+                    framebuffer: self.swapchain.framebuffers[image_index as usize],
                     render_area: vk::Rect2D {
-                        extent: self.swapchain_extent,
+                        extent: self.swapchain.swapchain_extent,
                         ..Default::default()
                     },
                     clear_value_count: 2,
@@ -856,10 +874,10 @@ impl super::Renderer {
                 self.draw_panorama(cb, frame);
             } else {
                 // ---- Sky rendering ----
-                let day_f = self.state.day_time as f32;
+                let day_f = self.state.hud.day_time() as f32;
                 let moon_phase =
-                    crate::render::sky::SkyGradient::moon_phase(self.state.day_time) as f32;
-                let celestial_visibility = if self.state.dimension == 0 {
+                    crate::render::sky::SkyGradient::moon_phase(self.state.hud.day_time()) as f32;
+                let celestial_visibility = if self.state.hud.dimension() == 0 {
                     1.0 - storm
                 } else {
                     0.0
@@ -871,8 +889,8 @@ impl super::Renderer {
                     crate::render::sky::SkyGradient::sun_direction(day_f),
                     celestial_visibility,
                     moon_phase,
-                    self.swapchain_extent.width as f32,
-                    self.swapchain_extent.height as f32,
+                    self.swapchain.swapchain_extent.width as f32,
+                    self.swapchain.swapchain_extent.height as f32,
                     sky.fog_params[2],
                     SkyGradient::daylight_factor(day_f),
                 );
@@ -885,8 +903,8 @@ impl super::Renderer {
                     cb,
                     0,
                     &[vk::Viewport {
-                        width: self.swapchain_extent.width as f32,
-                        height: self.swapchain_extent.height as f32,
+                        width: self.swapchain.swapchain_extent.width as f32,
+                        height: self.swapchain.swapchain_extent.height as f32,
                         max_depth: 1.0,
                         ..Default::default()
                     }],
@@ -895,7 +913,7 @@ impl super::Renderer {
                     cb,
                     0,
                     &[vk::Rect2D {
-                        extent: self.swapchain_extent,
+                        extent: self.swapchain.swapchain_extent,
                         ..Default::default()
                     }],
                 );
@@ -1068,7 +1086,7 @@ impl super::Renderer {
                 }
 
                 // Draw the local player in third person with the player's own skin.
-                if self.state.camera_mode != 0 && self.fp_arm_index_count > 0 {
+                if self.state.settings.camera_mode() != 0 && self.fp_arm_index_count > 0 {
                     if let (Some(vb), Some(ib)) =
                         (self.fp_arm_vertex_buffer, self.fp_arm_index_buffer)
                     {
@@ -1094,7 +1112,7 @@ impl super::Renderer {
                 }
 
                 // Draw the local player's held item in the same world-depth pass.
-                if self.state.camera_mode != 0 && self.fp_block_op_index_count > 0 {
+                if self.state.settings.camera_mode() != 0 && self.fp_block_op_index_count > 0 {
                     if let (Some(vb), Some(ib)) = (
                         self.fp_block_op_vertex_buffer,
                         self.fp_block_op_index_buffer,
@@ -1279,7 +1297,7 @@ impl super::Renderer {
                         }
                     }
 
-                    if self.state.camera_mode != 0 && self.fp_block_tr_index_count > 0 {
+                    if self.state.settings.camera_mode() != 0 && self.fp_block_tr_index_count > 0 {
                         if let (Some(vb), Some(ib)) = (
                             self.fp_block_tr_vertex_buffer,
                             self.fp_block_tr_index_buffer,
@@ -1381,15 +1399,15 @@ impl super::Renderer {
                 }
 
                 // Draw first person hand
-                if self.state.camera_mode == 0
-                    && !self.state.chat_open
-                    && !self.state.inventory_open
-                    && self.state.health > 0.0
+                if self.state.settings.camera_mode() == 0
+                    && !self.state.hud.chat_open()
+                    && !self.state.inventory.inventory_open()
+                    && self.state.hud.health() > 0.0
                 {
                     let clear_rect = vk::ClearRect {
                         rect: vk::Rect2D {
                             offset: vk::Offset2D { x: 0, y: 0 },
-                            extent: self.swapchain_extent,
+                            extent: self.swapchain.swapchain_extent,
                         },
                         base_array_layer: 0,
                         layer_count: 1,
@@ -1566,21 +1584,25 @@ impl super::Renderer {
             }
 
             // Underwater overlay: full-screen animated texture
-            if self.state.underwater {
+            if self.state.settings.underwater() {
                 let mut underwater_gui = super::gui::GuiVertexBuilder::new();
                 self.draw_gui_underwater(
                     cb,
                     frame,
                     &mut underwater_gui,
-                    self.state.underwater_yaw,
-                    self.state.underwater_pitch,
+                    self.state.settings.underwater_yaw(),
+                    self.state.settings.underwater_pitch(),
                 );
             }
 
             self.device.cmd_end_render_pass(cb);
-            self.device.end_command_buffer(cb).unwrap();
+            if let Err(e) = self.device.end_command_buffer(cb) {
+                log::error!("end_command_buffer failed: {e:?}");
+                self.swapchain.needs_recreate = true;
+                return;
+            }
         }
-        self.state.frame_command_us = command_started.elapsed().as_micros() as u64;
+        self.state.frame_profile.set_frame_command_us(command_started.elapsed().as_micros() as u64);
 
         if gui_builders.is_some() {
             self.gui_builder_cache = gui_builders.take();
@@ -1588,62 +1610,51 @@ impl super::Renderer {
 
         let submit_started = std::time::Instant::now();
         unsafe {
-            self.device
-                .queue_submit(
-                    self.queue,
-                    &[vk::SubmitInfo {
-                        wait_semaphore_count: 1,
-                        p_wait_semaphores: &self.image_available[frame],
-                        p_wait_dst_stage_mask: &vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                        command_buffer_count: 1,
-                        p_command_buffers: &cb,
-                        signal_semaphore_count: 1,
-                        p_signal_semaphores: &self.render_finished[frame],
-                        ..Default::default()
-                    }],
-                    fence,
-                )
-                .unwrap();
-        }
-        self.state.frame_submit_us = submit_started.elapsed().as_micros() as u64;
-        self.retired_draw_cmds[frame].append(&mut self.pending_retired_draw_cmds);
-
-        let present_info = vk::PresentInfoKHR {
-            wait_semaphore_count: 1,
-            p_wait_semaphores: &self.render_finished[frame],
-            swapchain_count: 1,
-            p_swapchains: &self.swapchain,
-            p_image_indices: &image_index,
-            ..Default::default()
-        };
-        let present_started = std::time::Instant::now();
-        unsafe {
-            match self.swapchain_fn.queue_present(self.queue, &present_info) {
-                Ok(true) | Err(vk::Result::ERROR_OUT_OF_DATE_KHR) => {
-                    self.needs_recreate = true;
-                }
-                Err(e) => log::error!("failed to present swapchain image: {e:?}"),
-                _ => {}
+            if let Err(e) = self.device.queue_submit(
+                self.queue,
+                &[vk::SubmitInfo {
+                    wait_semaphore_count: 1,
+                    p_wait_semaphores: &self.swapchain.image_available[frame],
+                    p_wait_dst_stage_mask: &vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    command_buffer_count: 1,
+                    p_command_buffers: &cb,
+                    signal_semaphore_count: 1,
+                    p_signal_semaphores: &self.swapchain.render_finished[frame],
+                    ..Default::default()
+                }],
+                fence,
+            ) {
+                log::error!("queue_submit failed (device likely lost): {e:?}");
+                self.swapchain.needs_recreate = true;
+                return;
             }
         }
-        self.state.frame_present_us = present_started.elapsed().as_micros() as u64;
+        self.state.frame_profile.set_frame_submit_us(submit_started.elapsed().as_micros() as u64);
+        self.retired_draw_cmds[frame].append(&mut self.pending_retired_draw_cmds);
+
+        let needs_resize = self.swapchain.present(self.queue, image_index, frame);
+        let present_started = std::time::Instant::now();
+        if needs_resize {
+            self.swapchain.needs_recreate = true;
+        }
+        self.state.frame_profile.set_frame_present_us(present_started.elapsed().as_micros() as u64);
 
         let cpu_us = t0.elapsed().as_micros() as u64;
-        self.state.frame_gpu_us = fence_us;
-        self.state.frame_cpu_us = cpu_us.saturating_sub(fence_us);
+        self.state.frame_profile.set_frame_gpu_us(fence_us);
+        self.state.frame_profile.set_frame_cpu_us(cpu_us.saturating_sub(fence_us));
 
-        self.current_frame = (frame + 1) % super::MAX_FRAMES;
+        self.swapchain.advance_frame();
     }
 
     fn sync_player_skin_atlas(&mut self) {
-        let content_hash = self.state.player_skin_content_hash;
+        let content_hash = self.state.hud.player_skin_content_hash();
         if self.synced_player_skin_content_hash == Some(content_hash) {
             return;
         }
 
-        let layout_changed = self.player_skin_layout_hash != self.state.player_skin_layout_hash;
+        let layout_changed = self.player_skin_layout_hash != self.state.hud.player_skin_layout_hash();
         let atlas_changed = self.entity_atlas.as_mut().is_some_and(|atlas| {
-            let changed = atlas.sync_player_skins(&self.state.pending_player_skins);
+            let changed = atlas.sync_player_skins(&self.state.hud.pending_player_skins());
             if atlas.take_full_upload_required() {
                 self.entity_atlas_full_upload_pending = true;
             }
@@ -1657,7 +1668,7 @@ impl super::Renderer {
             }
         }
         self.synced_player_skin_content_hash = Some(content_hash);
-        self.player_skin_layout_hash = self.state.player_skin_layout_hash;
+        self.player_skin_layout_hash = self.state.hud.player_skin_layout_hash();
     }
 
     fn prepare_entity_atlas_upload(&mut self, frame: usize) {
@@ -1674,7 +1685,7 @@ impl super::Renderer {
         };
         super::resources::upload_dynamic_buffer(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             &mut self.entity_skin_upload_buffers[frame],
             &mut self.entity_skin_upload_allocs[frame],
             &mut self.entity_skin_upload_capacities[frame],
@@ -1773,12 +1784,12 @@ impl super::Renderer {
         }
         super::resources::upload_dynamic_buffer(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             &mut self.local_skin_upload_buffers[frame],
             &mut self.local_skin_upload_allocs[frame],
             &mut self.local_skin_upload_capacities[frame],
             vk::BufferUsageFlags::TRANSFER_SRC,
-            self.state.local_skin.pixels.as_raw(),
+            self.state.settings.local_skin().pixels.as_raw(),
         );
     }
 
@@ -1789,7 +1800,7 @@ impl super::Renderer {
         let Some(staging) = self.local_skin_upload_buffers[frame] else {
             return;
         };
-        let (width, height) = self.state.local_skin.dimensions();
+        let (width, height) = self.state.settings.local_skin().dimensions();
         unsafe {
             self.device.cmd_pipeline_barrier(
                 cb,
@@ -1871,18 +1882,18 @@ impl super::Renderer {
 
         let skin_started = std::time::Instant::now();
         self.sync_player_skin_atlas();
-        self.state.entity_skin_sync_us = skin_started.elapsed().as_micros() as u64;
+        self.state.frame_profile.set_entity_skin_sync_us(skin_started.elapsed().as_micros() as u64);
 
         self.entity_frame_generation = self.entity_frame_generation.wrapping_add(1);
         let generation = self.entity_frame_generation;
         self.visible_entity_ids.clear();
-        self.state.entity_visible_count = 0;
-        self.state.entity_culled_count = 0;
-        self.state.entity_cache_hits = 0;
-        self.state.entity_cache_misses = 0;
-        self.state.entity_append_us = 0;
+        self.state.frame_profile.set_entity_visible_count(0);
+        self.state.frame_profile.set_entity_culled_count(0);
+        self.state.frame_profile.set_entity_cache_hits(0);
+        self.state.frame_profile.set_entity_cache_misses(0);
+        self.state.frame_profile.set_entity_append_us(0);
 
-        let profile = self.state.debug_overlay;
+        let profile = self.state.settings.debug_overlay();
         let mut hash_ns = 0u128;
         let mut lookup_ns = 0u128;
         let mut generate_ns = 0u128;
@@ -1896,7 +1907,7 @@ impl super::Renderer {
         let mut entity_invisible: std::collections::HashMap<i32, bool> =
             std::collections::HashMap::new();
 
-        for billboard in &self.state.entity_billboards {
+        for billboard in self.state.hud.entity_billboards() {
             self.entity_gpu_meshes
                 .entry(billboard.entity_id)
                 .or_default()
@@ -1909,10 +1920,10 @@ impl super::Renderer {
                 [position[0] - half, position[1], position[2] - half],
                 [position[0] + half, position[1] + height, position[2] + half],
             ) {
-                self.state.entity_culled_count += 1;
+                self.state.frame_profile.inc_entity_culled_count();
                 continue;
             }
-            self.state.entity_visible_count += 1;
+            self.state.frame_profile.inc_entity_visible_count();
             self.visible_entity_ids.push(billboard.entity_id);
 
             let hash_started = profile.then(std::time::Instant::now);
@@ -1922,7 +1933,7 @@ impl super::Renderer {
             if billboard.skin_key.is_some() {
                 state_hasher.write_u64(self.player_skin_atlas_generation);
             }
-            state_hasher.write_u32(self.state.entity_shadows as u32);
+            state_hasher.write_u32(self.state.settings.entity_shadows() as u32);
             // sub_tick drives the continuous bob/rotation of dropped items only
             // (see generate_dropped_item_mesh). Writing it for every entity made
             // all visible mobs/players/projectiles cache-miss every 50 ms.
@@ -1939,12 +1950,12 @@ impl super::Renderer {
             let cached = self
                 .entity_gpu_meshes
                 .get(&billboard.entity_id)
-                .is_some_and(|mesh| mesh.state_hash[self.current_frame] == Some(state_hash));
+                .is_some_and(|mesh| mesh.state_hash[self.swapchain.current_frame] == Some(state_hash));
             if let Some(started) = lookup_started {
                 lookup_ns += started.elapsed().as_nanos();
             }
             if cached {
-                self.state.entity_cache_hits += 1;
+                self.state.frame_profile.inc_entity_cache_hits();
                 continue;
             }
 
@@ -2162,6 +2173,8 @@ impl super::Renderer {
                     let atlas_name = billboard.skin_key.as_deref().unwrap_or_else(|| {
                         atlas_name_for_entity(billboard.entity_type, billboard.visual)
                     });
+                    // Never leave atlas_uv=None: local 0..1 UVs sample the whole
+                    // 4096 atlas and scramble every mob texture.
                     atlas
                         .region_for(atlas_name)
                         .or_else(|| {
@@ -2169,6 +2182,7 @@ impl super::Renderer {
                                 .then(|| atlas.region_for("player"))
                                 .flatten()
                         })
+                        .or_else(|| atlas.region_for("__white"))
                         .map(|r| [r.u_min, r.v_min, r.u_max, r.v_max])
                 });
                 let cape_atlas_uv = self.entity_atlas.as_ref().and_then(|atlas| {
@@ -2257,7 +2271,7 @@ impl super::Renderer {
                 held_item_vertices.clear();
                 held_item_indices.clear();
             }
-            if self.state.entity_shadows && !billboard.invisible {
+            if self.state.settings.entity_shadows() && !billboard.invisible {
                 append_entity_shadow(&mut body_vertices, &mut body_indices, billboard);
             }
             if let Some(started) = generate_started {
@@ -2265,17 +2279,20 @@ impl super::Renderer {
             }
 
             let upload_started = std::time::Instant::now();
-            let mesh = self
-                .entity_gpu_meshes
-                .get_mut(&billboard.entity_id)
-                .expect("visible entity cache entry must exist");
+            let Some(mesh) = self.entity_gpu_meshes.get_mut(&billboard.entity_id) else {
+                log::warn!(
+                    "visible entity cache entry missing for entity_id={}; skipping upload",
+                    billboard.entity_id
+                );
+                continue;
+            };
             // Pre-populate all MAX_FRAMES slots so a sudden burst of entities
             // (e.g. camera rotation) never repeats the same regeneration
             // across the next two frame cycles.
             for slot in 0..super::MAX_FRAMES {
                 upload_cached_gpu_mesh(
                     &self.device,
-                    &mut self.allocator,
+                    self.resources.allocator_mut(),
                     &mut mesh.body[slot],
                     bytemuck::cast_slice(&body_vertices),
                     bytemuck::cast_slice(&body_indices),
@@ -2283,7 +2300,7 @@ impl super::Renderer {
                 );
                 upload_cached_gpu_mesh(
                     &self.device,
-                    &mut self.allocator,
+                    self.resources.allocator_mut(),
                     &mut mesh.held_block[slot],
                     bytemuck::cast_slice(&held_block_vertices),
                     bytemuck::cast_slice(&held_block_indices),
@@ -2291,7 +2308,7 @@ impl super::Renderer {
                 );
                 upload_cached_gpu_mesh(
                     &self.device,
-                    &mut self.allocator,
+                    self.resources.allocator_mut(),
                     &mut mesh.held_item[slot],
                     bytemuck::cast_slice(&held_item_vertices),
                     bytemuck::cast_slice(&held_item_indices),
@@ -2300,7 +2317,7 @@ impl super::Renderer {
                 mesh.state_hash[slot] = Some(state_hash);
             }
             upload_ns += upload_started.elapsed().as_nanos();
-            self.state.entity_cache_misses += 1;
+            self.state.frame_profile.inc_entity_cache_misses();
         }
 
         // Generate mob/player meshes in parallel across the Rayon thread pool,
@@ -2316,13 +2333,13 @@ impl super::Renderer {
                 .collect();
             generate_ns += par_started.elapsed().as_nanos();
 
-            for result in &results {
-                let mut body_v = result.body_vertices.clone();
-                let mut body_i = result.body_indices.clone();
-                let mut hb_v = result.held_block_vertices.clone();
-                let mut hb_i = result.held_block_indices.clone();
-                let mut hi_v = result.held_item_vertices.clone();
-                let mut hi_i = result.held_item_indices.clone();
+            for result in results {
+                let mut body_v = result.body_vertices;
+                let mut body_i = result.body_indices;
+                let mut hb_v = result.held_block_vertices;
+                let mut hb_i = result.held_block_indices;
+                let mut hi_v = result.held_item_vertices;
+                let mut hi_i = result.held_item_indices;
 
                 let invisible = entity_invisible
                     .get(&result.entity_id)
@@ -2336,7 +2353,7 @@ impl super::Renderer {
                     hi_v.clear();
                     hi_i.clear();
                 }
-                if self.state.entity_shadows
+                if self.state.settings.entity_shadows()
                     && !invisible
                     && (result.entity_type.is_mob()
                         || result.entity_type == crate::entity::EntityType::Item
@@ -2363,14 +2380,17 @@ impl super::Renderer {
                 }
 
                 let upload_per = std::time::Instant::now();
-                let mesh = self
-                    .entity_gpu_meshes
-                    .get_mut(&result.entity_id)
-                    .expect("visible mob entity cache entry must exist");
+                let Some(mesh) = self.entity_gpu_meshes.get_mut(&result.entity_id) else {
+                    log::warn!(
+                        "visible mob entity cache entry missing for entity_id={}; skipping upload",
+                        result.entity_id
+                    );
+                    continue;
+                };
                 for slot in 0..super::MAX_FRAMES {
                     upload_cached_gpu_mesh(
                         &self.device,
-                        &mut self.allocator,
+                        self.resources.allocator_mut(),
                         &mut mesh.body[slot],
                         bytemuck::cast_slice(&body_v),
                         bytemuck::cast_slice(&body_i),
@@ -2378,7 +2398,7 @@ impl super::Renderer {
                     );
                     upload_cached_gpu_mesh(
                         &self.device,
-                        &mut self.allocator,
+                        self.resources.allocator_mut(),
                         &mut mesh.held_block[slot],
                         bytemuck::cast_slice(&hb_v),
                         bytemuck::cast_slice(&hb_i),
@@ -2386,7 +2406,7 @@ impl super::Renderer {
                     );
                     upload_cached_gpu_mesh(
                         &self.device,
-                        &mut self.allocator,
+                        self.resources.allocator_mut(),
                         &mut mesh.held_item[slot],
                         bytemuck::cast_slice(&hi_v),
                         bytemuck::cast_slice(&hi_i),
@@ -2394,12 +2414,12 @@ impl super::Renderer {
                     );
                     mesh.state_hash[slot] = Some(result.state_hash);
                 }
-                self.state.entity_cache_misses += 1;
+                self.state.frame_profile.inc_entity_cache_misses();
                 upload_ns += upload_per.elapsed().as_nanos();
             }
         }
 
-        self.state.entity_loop_us = loop_started.elapsed().as_micros() as u64;
+        self.state.frame_profile.set_entity_loop_us(loop_started.elapsed().as_micros() as u64);
 
         let prune_started = std::time::Instant::now();
         self.stale_entity_ids.clear();
@@ -2412,20 +2432,20 @@ impl super::Renderer {
         );
         for entity_id in self.stale_entity_ids.drain(..) {
             if let Some(mut mesh) = self.entity_gpu_meshes.remove(&entity_id) {
-                super::destroy_entity_gpu_mesh(&self.device, &mut self.allocator, &mut mesh);
+                super::destroy_entity_gpu_mesh(&self.device, self.resources.allocator_mut(), &mut mesh);
             }
         }
-        self.state.entity_prune_us = prune_started.elapsed().as_micros() as u64;
+        self.state.frame_profile.set_entity_prune_us(prune_started.elapsed().as_micros() as u64);
 
-        self.state.entity_hash_us = (hash_ns / 1_000) as u64;
-        self.state.entity_lookup_us = (lookup_ns / 1_000) as u64;
-        self.state.entity_generate_us = (generate_ns / 1_000) as u64;
-        self.state.entity_upload_us = (upload_ns / 1_000) as u64;
-        self.state.entity_batch_reused = self.state.entity_cache_misses == 0;
+        self.state.frame_profile.set_entity_hash_us((hash_ns / 1_000) as u64);
+        self.state.frame_profile.set_entity_lookup_us((lookup_ns / 1_000) as u64);
+        self.state.frame_profile.set_entity_generate_us((generate_ns / 1_000) as u64);
+        self.state.frame_profile.set_entity_upload_us((upload_ns / 1_000) as u64);
+        self.state.frame_profile.set_entity_batch_reused(self.state.frame_profile.entity_cache_misses() == 0);
 
         let extras_started = std::time::Instant::now();
         self.upload_entity_extras(camera);
-        self.state.entity_extras_us = extras_started.elapsed().as_micros() as u64;
+        self.state.frame_profile.set_entity_extras_us(extras_started.elapsed().as_micros() as u64);
     }
 
     fn upload_entity_extras(&mut self, camera: &crate::client::player::Camera) {
@@ -2436,10 +2456,7 @@ impl super::Renderer {
         // atlas allocation prevents distant or stale tile entities from
         // consuming every runtime text slot. Coordinate order makes the atlas
         // layout deterministic even though sign_data originates in a HashMap.
-        let mut visible_signs: Vec<_> = self
-            .state
-            .sign_entries
-            .iter()
+        let mut visible_signs: Vec<_> = self.state.hud.sign_entries().iter()
             .filter(|sign| {
                 let dx = sign.position[0] as f32 + 0.5 - camera.position.x;
                 let dy = sign.position[1] as f32 + 0.5 - camera.position.y;
@@ -2453,7 +2470,7 @@ impl super::Renderer {
         let mut hasher = fnv::FnvHasher::default();
         hasher.write_u64(self.entity_atlas_generation);
         hasher.write_u64(self.player_skin_atlas_generation);
-        for skull in &self.state.skull_entries {
+        for skull in self.state.hud.skull_entries() {
             hasher.write_i32(skull.position[0]);
             hasher.write_i32(skull.position[1]);
             hasher.write_i32(skull.position[2]);
@@ -2462,7 +2479,7 @@ impl super::Renderer {
             hasher.write_u8(skull.rotation);
             hasher.write(skull.skin_key.as_bytes());
         }
-        for chest in &self.state.chest_entries {
+        for chest in self.state.hud.chest_entries() {
             for value in chest.position {
                 hasher.write_i32(value);
             }
@@ -2496,7 +2513,7 @@ impl super::Renderer {
         self.entity_mesh_indices.clear();
 
         if let Some(atlas) = self.entity_atlas.as_ref() {
-            for skull in &self.state.skull_entries {
+            for skull in self.state.hud.skull_entries() {
                 if let Some(region) = atlas.region_for(&skull.skin_key) {
                     append_player_skull_mesh(
                         &mut self.entity_mesh_vertices,
@@ -2506,18 +2523,23 @@ impl super::Renderer {
                     );
                 }
             }
-            for chest in &self.state.chest_entries {
-                let variant = match chest.block {
-                    crate::world::block::Block::TrappedChest => "trapped",
-                    crate::world::block::Block::EnderChest => "ender",
-                    _ => "normal",
-                };
-                let texture = if chest.double_x || chest.double_z {
-                    format!("chest_{variant}_double")
+            for chest in self.state.hud.chest_entries() {
+                // Static texture keys for the six chest variants — avoids the
+                // per-frame `format!` that used to build these lookup strings.
+                let texture: &'static str = if chest.double_x || chest.double_z {
+                    match chest.block {
+                        crate::world::block::Block::TrappedChest => "chest_trapped_double",
+                        crate::world::block::Block::EnderChest => "chest_ender_double",
+                        _ => "chest_normal_double",
+                    }
                 } else {
-                    format!("chest_{variant}")
+                    match chest.block {
+                        crate::world::block::Block::TrappedChest => "chest_trapped",
+                        crate::world::block::Block::EnderChest => "chest_ender",
+                        _ => "chest_normal",
+                    }
                 };
-                if let Some(region) = atlas.region_for(&texture) {
+                if let Some(region) = atlas.region_for(texture) {
                     append_chest_entity_mesh(
                         &mut self.entity_mesh_vertices,
                         &mut self.entity_mesh_indices,
@@ -2540,6 +2562,10 @@ impl super::Renderer {
             }
         }
         let sign_atlas_hash = sign_hasher.finish();
+        // Reusable key buffer — avoids the per-sign `format!` allocation on the
+        // hot path. The position is hashed to a u64 id so the key stays short.
+        use std::fmt::Write as _;
+        let mut sign_key_buf = String::with_capacity(24);
         if sign_atlas_hash != self.sign_atlas_hash {
             let mut atlas_changed = false;
             if let Some(atlas) = self.entity_atlas.as_mut() {
@@ -2552,17 +2578,18 @@ impl super::Renderer {
             }
             for sign in &visible_signs {
                 let position = sign.position;
-                let key = format!("sign_{}_{}_{}", position[0], position[1], position[2]);
+                sign_key_buf.clear();
+                let _ = write!(sign_key_buf, "sign_{}", sign_position_key_id(position));
                 let texture = build_sign_texture(&mut self.font, &sign.lines);
                 if self
                     .entity_atlas
                     .as_mut()
-                    .and_then(|atlas| atlas.pack_sign_text(&key, &texture.0, texture.1, texture.2))
+                    .and_then(|atlas| atlas.pack_sign_text(&sign_key_buf, &texture.0, texture.1, texture.2))
                     .is_some()
                 {
                     atlas_changed = true;
                 } else {
-                    log::warn!("entity texture atlas has no room for sign text '{key}'");
+                    log::warn!("entity texture atlas has no room for sign text '{}'", sign_key_buf);
                 }
             }
             if atlas_changed {
@@ -2573,11 +2600,12 @@ impl super::Renderer {
 
         for sign in &visible_signs {
             let position = sign.position;
-            let key = format!("sign_{}_{}_{}", position[0], position[1], position[2]);
+            sign_key_buf.clear();
+            let _ = write!(sign_key_buf, "sign_{}", sign_position_key_id(position));
             let Some(region) = self
                 .entity_atlas
                 .as_ref()
-                .and_then(|atlas| atlas.region_for(&key))
+                .and_then(|atlas| atlas.region_for(&sign_key_buf))
             else {
                 continue;
             };
@@ -2646,7 +2674,7 @@ impl super::Renderer {
         }
         super::resources::upload_dynamic_buffer(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             &mut self.entity_vertex_buffer,
             &mut self.entity_vertex_alloc,
             &mut self.entity_vertex_capacity,
@@ -2655,7 +2683,7 @@ impl super::Renderer {
         );
         super::resources::upload_dynamic_buffer(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             &mut self.entity_index_buffer,
             &mut self.entity_index_alloc,
             &mut self.entity_index_capacity,
@@ -2669,9 +2697,9 @@ impl super::Renderer {
         use std::hash::Hasher;
 
         let mut h = fnv::FnvHasher::default();
-        h.write_u32(self.state.entity_shadows as u32);
-        h.write_usize(self.state.entity_billboards.len());
-        for billboard in &self.state.entity_billboards {
+        h.write_u32(self.state.settings.entity_shadows() as u32);
+        h.write_usize(self.state.hud.entity_billboards().len());
+        for billboard in self.state.hud.entity_billboards() {
             h.write_u64(super::entity_mesh_state_hash(billboard));
             // Dropped item meshes bake their bob/rotation from wall-clock time.
             // Keep their animation correct; static entity batches still reuse.
@@ -2683,8 +2711,8 @@ impl super::Renderer {
                 h.write_u64(frame_time);
             }
         }
-        h.write_usize(self.state.skull_entries.len());
-        for skull in &self.state.skull_entries {
+        h.write_usize(self.state.hud.skull_entries().len());
+        for skull in self.state.hud.skull_entries() {
             h.write_i32(skull.position[0]);
             h.write_i32(skull.position[1]);
             h.write_i32(skull.position[2]);
@@ -2693,8 +2721,8 @@ impl super::Renderer {
             h.write_u8(skull.rotation);
             h.write(skull.skin_key.as_bytes());
         }
-        h.write_usize(self.state.sign_entries.len());
-        for sign in &self.state.sign_entries {
+        h.write_usize(self.state.hud.sign_entries().len());
+        for sign in self.state.hud.sign_entries() {
             h.write_i32(sign.position[0]);
             h.write_i32(sign.position[1]);
             h.write_i32(sign.position[2]);
@@ -2715,20 +2743,20 @@ impl super::Renderer {
 
         let skin_started = std::time::Instant::now();
         self.sync_player_skin_atlas();
-        self.state.entity_skin_sync_us = skin_started.elapsed().as_micros() as u64;
+        self.state.frame_profile.set_entity_skin_sync_us(skin_started.elapsed().as_micros() as u64);
 
         // Billboard/UI state may change without affecting geometry.  Hash only
         // the combined mesh input, then reuse the existing GPU buffers when it
         // matches.  This avoids re-copying every cached entity mesh.
         let mesh_hash = self.combined_entity_mesh_hash();
         if mesh_hash == self.entity_state_hash
-            && self.state.entity_billboards.is_empty() == (self.entity_index_count == 0)
+            && self.state.hud.entity_billboards().is_empty() == (self.entity_index_count == 0)
             && self.entity_vertex_buffer.is_some()
         {
-            self.state.entity_batch_reused = true;
+            self.state.frame_profile.set_entity_batch_reused(true);
             return;
         }
-        self.state.entity_batch_reused = false;
+        self.state.frame_profile.set_entity_batch_reused(false);
         self.entity_state_hash = mesh_hash;
 
         self.entity_index_count = 0;
@@ -2754,11 +2782,8 @@ impl super::Renderer {
         let mut hash_us = 0;
         let mut lookup_us = 0;
         let mut append_us = 0;
-        self.state.entity_culled_count = 0;
-        let active_entity_ids: fnv::FnvHashMap<i32, ()> = self
-            .state
-            .entity_billboards
-            .iter()
+        self.state.frame_profile.set_entity_culled_count(0);
+        let active_entity_ids: fnv::FnvHashMap<i32, ()> = self.state.hud.entity_billboards().iter()
             .map(|billboard| (billboard.entity_id, ()))
             .collect();
         self.entity_mesh_cache
@@ -2766,7 +2791,7 @@ impl super::Renderer {
         // Get atlas reference for UV remapping
         let atlas = self.entity_atlas.as_ref();
 
-        for billboard in &self.state.entity_billboards {
+        for billboard in self.state.hud.entity_billboards() {
             let (w, h) = billboard.entity_type.bounding_box();
             let half = w.max(h) * 0.5;
             let pos = billboard.position;
@@ -2774,10 +2799,10 @@ impl super::Renderer {
                 [pos[0] - half, pos[1], pos[2] - half],
                 [pos[0] + half, pos[1] + h, pos[2] + half],
             ) {
-                self.state.entity_culled_count += 1;
+                self.state.frame_profile.inc_entity_culled_count();
                 continue;
             }
-            self.state.entity_visible_count += 1;
+            self.state.frame_profile.inc_entity_visible_count();
 
             if billboard.kind == super::EntityBillboardKind::Item {
                 if let Some(item_id) = billboard.item_id {
@@ -2868,7 +2893,7 @@ impl super::Renderer {
                     lookup_us += start.elapsed().as_micros() as u64;
                 }
                 if *cached_hash == entity_hash {
-                    self.state.entity_cache_hits += 1;
+                    self.state.frame_profile.inc_entity_cache_hits();
                     let append_start = profile_entity_loop.then(std::time::Instant::now);
                     let base_idx = all_vertices.len() as u32;
                     all_vertices.reserve(cached_verts.len());
@@ -2951,13 +2976,14 @@ impl super::Renderer {
                 let atlas_name = billboard.skin_key.as_deref().unwrap_or_else(|| {
                     atlas_name_for_entity(billboard.entity_type, billboard.visual)
                 });
-                let region = atlas.region_for(atlas_name).or_else(|| {
-                    if billboard.entity_type == crate::entity::EntityType::Player {
-                        atlas.region_for("player")
-                    } else {
-                        None
-                    }
-                });
+                let region = atlas
+                    .region_for(atlas_name)
+                    .or_else(|| {
+                        (billboard.entity_type == crate::entity::EntityType::Player)
+                            .then(|| atlas.region_for("player"))
+                            .flatten()
+                    })
+                    .or_else(|| atlas.region_for("__white"));
                 if let Some(region) = region {
                     for v in &mut verts {
                         let (au, av) = region.local_to_atlas(v.uv[0], v.uv[1]);
@@ -2976,16 +3002,20 @@ impl super::Renderer {
                 }
             }
 
-            // Cache the generated mesh for this entity
-            self.entity_mesh_cache.insert(
-                billboard.entity_id,
-                (entity_hash, verts.clone(), idxs.clone()),
-            );
-            self.state.entity_cache_misses += 1;
+            // Cache the generated mesh for this entity — move ownership into the
+            // cache and read it back by reference to avoid cloning the
+            // vertex/index buffers on every cache miss.
+            self.entity_mesh_cache
+                .insert(billboard.entity_id, (entity_hash, verts, idxs));
+            self.state.frame_profile.inc_entity_cache_misses();
+            let cached = self
+                .entity_mesh_cache
+                .get(&billboard.entity_id)
+                .expect("entity mesh just inserted");
 
             // Append to output buffers
-            all_vertices.extend_from_slice(&verts);
-            all_indices.extend(idxs.iter().map(|i| base_idx + i));
+            all_vertices.extend_from_slice(&cached.1);
+            all_indices.extend(cached.2.iter().map(|i| base_idx + i));
 
             let supports_held_item = matches!(
                 billboard.entity_type,
@@ -3033,7 +3063,7 @@ impl super::Renderer {
         }
 
         if let Some(atlas) = atlas {
-            for skull in &self.state.skull_entries {
+            for skull in self.state.hud.skull_entries() {
                 let [x, y, z] = skull.position;
                 let (min, max) = skull_bounds(skull);
                 if !frustum.test_aabb(
@@ -3049,8 +3079,8 @@ impl super::Renderer {
         }
 
         // Generate shadow quads under entities
-        if self.state.entity_shadows {
-            for billboard in &self.state.entity_billboards {
+        if self.state.settings.entity_shadows() {
+            for billboard in self.state.hud.entity_billboards() {
                 if !billboard.entity_type.is_mob()
                     && billboard.entity_type != crate::entity::EntityType::Item
                     && billboard.entity_type != crate::entity::EntityType::XPOrb
@@ -3100,18 +3130,22 @@ impl super::Renderer {
             }
         }
 
+        // Reusable sign key buffer — avoids per-frame `format!` allocations.
+        use std::fmt::Write as _;
+        let mut sign_key_buf = String::with_capacity(24);
         // Sign text — generate texture plates and pack into entity atlas
-        if !self.state.sign_entries.is_empty() {
+        if !self.state.hud.sign_entries().is_empty() {
             if let Some(ref mut atlas) = self.entity_atlas {
                 let mut atlas_changed = false;
-                for sign in &self.state.sign_entries {
+                for sign in self.state.hud.sign_entries() {
                     let pos = sign.position;
-                    let sign_key = format!("sign_{}_{}_{}", pos[0], pos[1], pos[2]);
+                    sign_key_buf.clear();
+                    let _ = write!(sign_key_buf, "sign_{}", sign_position_key_id(pos));
                     // pack_sign_text replaces an existing region in-place, so text
                     // updates are visible without changing the mesh UVs.
                     let tex = build_sign_texture(&mut self.font, &sign.lines);
                     atlas_changed |= atlas
-                        .pack_sign_text(&sign_key, &tex.0, tex.1, tex.2)
+                        .pack_sign_text(&sign_key_buf, &tex.0, tex.1, tex.2)
                         .is_some();
                 }
                 if atlas_changed {
@@ -3123,7 +3157,7 @@ impl super::Renderer {
         // Sign text meshes — world-space quads placed on the board face using
         // the same block metadata transforms as TileEntitySignRenderer.
         if let Some(camera) = self.current_camera.as_ref() {
-            for sign in &self.state.sign_entries {
+            for sign in self.state.hud.sign_entries() {
                 let pos = sign.position;
                 let dx = pos[0] as f32 + 0.5 - camera.position.x;
                 let dy = pos[1] as f32 + 0.5 - camera.position.y;
@@ -3132,11 +3166,12 @@ impl super::Renderer {
                     continue;
                 } // Vanilla tile entities use a 64-block render distance.
 
-                let sign_key = format!("sign_{}_{}_{}", pos[0], pos[1], pos[2]);
+                sign_key_buf.clear();
+                let _ = write!(sign_key_buf, "sign_{}", sign_position_key_id(pos));
                 if let Some(region) = self
                     .entity_atlas
                     .as_ref()
-                    .and_then(|a| a.region_for(&sign_key))
+                    .and_then(|a| a.region_for(&sign_key_buf))
                 {
                     let (center, normal) = sign_text_plane(sign);
                     let right = [normal[2], 0.0, -normal[0]];
@@ -3197,10 +3232,10 @@ impl super::Renderer {
             }
         }
 
-        self.state.entity_loop_us = t_loop.elapsed().as_micros() as u64;
-        self.state.entity_hash_us = hash_us;
-        self.state.entity_lookup_us = lookup_us;
-        self.state.entity_append_us = append_us;
+        self.state.frame_profile.set_entity_loop_us(t_loop.elapsed().as_micros() as u64);
+        self.state.frame_profile.set_entity_hash_us(hash_us);
+        self.state.frame_profile.set_entity_lookup_us(lookup_us);
+        self.state.frame_profile.set_entity_append_us(append_us);
 
         if all_vertices.is_empty() && held_block_indices.is_empty() && held_item_indices.is_empty()
         {
@@ -3211,7 +3246,7 @@ impl super::Renderer {
         if !all_indices.is_empty() {
             super::resources::upload_dynamic_buffer(
                 &self.device,
-                &mut self.allocator,
+                self.resources.allocator_mut(),
                 &mut self.entity_vertex_buffer,
                 &mut self.entity_vertex_alloc,
                 &mut self.entity_vertex_capacity,
@@ -3220,7 +3255,7 @@ impl super::Renderer {
             );
             super::resources::upload_dynamic_buffer(
                 &self.device,
-                &mut self.allocator,
+                self.resources.allocator_mut(),
                 &mut self.entity_index_buffer,
                 &mut self.entity_index_alloc,
                 &mut self.entity_index_capacity,
@@ -3233,7 +3268,7 @@ impl super::Renderer {
         if !held_block_indices.is_empty() {
             super::resources::upload_dynamic_buffer(
                 &self.device,
-                &mut self.allocator,
+                self.resources.allocator_mut(),
                 &mut self.entity_held_block_vertex_buffer,
                 &mut self.entity_held_block_vertex_alloc,
                 &mut self.entity_held_block_vertex_capacity,
@@ -3242,7 +3277,7 @@ impl super::Renderer {
             );
             super::resources::upload_dynamic_buffer(
                 &self.device,
-                &mut self.allocator,
+                self.resources.allocator_mut(),
                 &mut self.entity_held_block_index_buffer,
                 &mut self.entity_held_block_index_alloc,
                 &mut self.entity_held_block_index_capacity,
@@ -3254,7 +3289,7 @@ impl super::Renderer {
         if !held_item_indices.is_empty() {
             super::resources::upload_dynamic_buffer(
                 &self.device,
-                &mut self.allocator,
+                self.resources.allocator_mut(),
                 &mut self.entity_held_item_vertex_buffer,
                 &mut self.entity_held_item_vertex_alloc,
                 &mut self.entity_held_item_vertex_capacity,
@@ -3263,7 +3298,7 @@ impl super::Renderer {
             );
             super::resources::upload_dynamic_buffer(
                 &self.device,
-                &mut self.allocator,
+                self.resources.allocator_mut(),
                 &mut self.entity_held_item_index_buffer,
                 &mut self.entity_held_item_index_alloc,
                 &mut self.entity_held_item_index_capacity,
@@ -3272,7 +3307,7 @@ impl super::Renderer {
             );
             self.entity_held_item_index_count = held_item_indices.len() as u32;
         }
-        self.state.entity_upload_us = t_upload.elapsed().as_micros() as u64;
+        self.state.frame_profile.set_entity_upload_us(t_upload.elapsed().as_micros() as u64);
     }
 
     /// Build and upload the 3D particle mesh from the current particle_list.
@@ -3298,11 +3333,11 @@ impl super::Renderer {
         if mesh_hash == self.particle_mesh_hash
             && (self.particle_list.is_empty() || self.particle_vertex_buffer.is_some())
         {
-            self.state.particle_batch_reused = true;
+            self.state.frame_profile.set_particle_batch_reused(true);
             return;
         }
         self.particle_mesh_hash = mesh_hash;
-        self.state.particle_batch_reused = false;
+        self.state.frame_profile.set_particle_batch_reused(false);
         self.particle_index_count = 0;
 
         if self.particle_list.is_empty() {
@@ -3328,7 +3363,7 @@ impl super::Renderer {
 
         super::resources::upload_dynamic_buffer(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             &mut self.particle_vertex_buffer,
             &mut self.particle_vertex_alloc,
             &mut self.particle_vertex_capacity,
@@ -3337,7 +3372,7 @@ impl super::Renderer {
         );
         super::resources::upload_dynamic_buffer(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             &mut self.particle_index_buffer,
             &mut self.particle_index_alloc,
             &mut self.particle_index_capacity,
@@ -3347,6 +3382,17 @@ impl super::Renderer {
         self.particle_index_count = indices.len() as u32;
     }
 
+    /// Font size used when rasterising nametag text into the entity atlas.
+    const NAMETAG_FONT_SIZE: f32 = 14.0;
+    /// World-space scale applied to the nametag billboard quad.
+    const NAMETAG_SCALE: f32 = 0.01333333;
+    /// Maximum nametag visibility distance (blocks) when the entity is sneaking.
+    const NAMETAG_SNEAK_VISIBILITY: f32 = 32.0;
+    /// Maximum nametag visibility distance (blocks) when the entity is standing.
+    const NAMETAG_NORMAL_VISIBILITY: f32 = 64.0;
+    /// Vertical offset (blocks) above the entity's bounding-box top.
+    const NAMETAG_HEIGHT_OFFSET: f32 = 0.5;
+
     /// Build and upload nametag billboard quads for entities with visible names.
     fn upload_nametag_mesh(&mut self, camera: &crate::client::player::Camera) {
         use super::entity::mesh::EntityVertex;
@@ -3354,14 +3400,11 @@ impl super::Renderer {
 
         self.nametag_index_count = 0;
 
-        if self.state.entity_billboards.is_empty() {
+        if self.state.hud.entity_billboards().is_empty() {
             return;
         }
 
-        let mut active_names: Vec<String> = self
-            .state
-            .entity_billboards
-            .iter()
+        let mut active_names: Vec<String> = self.state.hud.entity_billboards().iter()
             .filter(|entity| entity.name_visible)
             .filter_map(|entity| entity.name.clone())
             .collect();
@@ -3375,6 +3418,10 @@ impl super::Renderer {
         }
         let name_hash = name_hasher.finish();
 
+        // Reusable nametag key buffer — avoids per-frame `format!` allocations.
+        use std::fmt::Write as _;
+        let mut nametag_key_buf = String::with_capacity(48);
+
         if name_hash != self.nametag_text_hash {
             self.nametag_text_hash = name_hash;
             if let Some(atlas) = self.entity_atlas.as_mut() {
@@ -3382,14 +3429,15 @@ impl super::Renderer {
             }
             let mut atlas_modified = false;
             for name in &active_names {
-                let font_size = 14.0;
-                let key = format!("nametag_{}", name);
+                let font_size = Self::NAMETAG_FONT_SIZE;
+                nametag_key_buf.clear();
+                let _ = write!(nametag_key_buf, "nametag_{}", name);
                 let texture = build_nametag_texture(&mut self.font, name, font_size);
                 if self
                     .entity_atlas
                     .as_mut()
                     .and_then(|atlas| {
-                        atlas.pack_nametag_text(&key, &texture.0, texture.1, texture.2)
+                        atlas.pack_nametag_text(&nametag_key_buf, &texture.0, texture.1, texture.2)
                     })
                     .is_some()
                 {
@@ -3404,7 +3452,7 @@ impl super::Renderer {
         let mut vertices: Vec<EntityVertex> = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
 
-        for entity in &self.state.entity_billboards {
+        for entity in self.state.hud.entity_billboards() {
             if !entity.name_visible {
                 continue;
             }
@@ -3412,7 +3460,7 @@ impl super::Renderer {
                 Some(n) => n,
                 None => continue,
             };
-            let max_dist = if entity.sneaking { 32.0 } else { 64.0 };
+            let max_dist = if entity.sneaking { Self::NAMETAG_SNEAK_VISIBILITY } else { Self::NAMETAG_NORMAL_VISIBILITY };
             let dx = camera.position.x - entity.position[0];
             let dy = camera.position.y - (entity.position[1] + entity.height * 0.5);
             let dz = camera.position.z - entity.position[2];
@@ -3423,23 +3471,24 @@ impl super::Renderer {
 
             let center = [
                 entity.position[0],
-                entity.position[1] + entity.height + 0.5,
+                entity.position[1] + entity.height + Self::NAMETAG_HEIGHT_OFFSET,
                 entity.position[2],
             ];
 
-            let font_size = 14.0;
-            let nametag_key = format!("nametag_{}", name);
+            let font_size = Self::NAMETAG_FONT_SIZE;
+            nametag_key_buf.clear();
+            let _ = write!(nametag_key_buf, "nametag_{}", name);
 
             let region = self
                 .entity_atlas
                 .as_ref()
-                .and_then(|atlas| atlas.region_for(&nametag_key));
+                .and_then(|atlas| atlas.region_for(&nametag_key_buf));
 
             let Some(region) = region else {
                 continue;
             };
 
-            let scale = 0.01333333;
+            let scale = Self::NAMETAG_SCALE;
             let half_w = region.tex_width as f32 * 0.5 * scale;
             let half_h = region.tex_height as f32 * 0.5 * scale;
 
@@ -3505,7 +3554,7 @@ impl super::Renderer {
 
         super::resources::upload_dynamic_buffer(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             &mut self.nametag_vertex_buffer,
             &mut self.nametag_vertex_alloc,
             &mut self.nametag_vertex_capacity,
@@ -3514,7 +3563,7 @@ impl super::Renderer {
         );
         super::resources::upload_dynamic_buffer(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             &mut self.nametag_index_buffer,
             &mut self.nametag_index_alloc,
             &mut self.nametag_index_capacity,
@@ -3532,39 +3581,39 @@ impl super::Renderer {
         // the current tick value directly makes the hand visibly step at 20 Hz,
         // especially while airborne camera pitch is changing.
         let partial_tick = camera.partial_tick.clamp(0.0, 1.0);
-        let arm_pitch = self.state.first_person_prev_arm_pitch
+        let arm_pitch = self.state.hud.first_person_prev_arm_pitch()
             + crate::util::wrap_degrees(
-                self.state.first_person_arm_pitch - self.state.first_person_prev_arm_pitch,
+                self.state.hud.first_person_arm_pitch() - self.state.hud.first_person_prev_arm_pitch(),
             ) * partial_tick;
-        let arm_yaw = self.state.first_person_prev_arm_yaw
+        let arm_yaw = self.state.hud.first_person_prev_arm_yaw()
             + crate::util::wrap_degrees(
-                self.state.first_person_arm_yaw - self.state.first_person_prev_arm_yaw,
+                self.state.hud.first_person_arm_yaw() - self.state.hud.first_person_prev_arm_yaw(),
             ) * partial_tick;
 
         let mut hasher = fnv::FnvHasher::default();
-        hasher.write_u8(self.state.camera_mode);
-        hasher.write_u32(self.state.chat_open as u32);
-        hasher.write_u32(self.state.inventory_open as u32);
-        hasher.write_u32(self.state.health.to_bits());
-        hasher.write_u16(self.state.hand_item_id);
-        hasher.write_u16(self.state.hand_item_damage);
-        hasher.write_u32(self.state.hand_swing_progress.to_bits());
+        hasher.write_u8(self.state.settings.camera_mode());
+        hasher.write_u32(self.state.hud.chat_open() as u32);
+        hasher.write_u32(self.state.inventory.inventory_open() as u32);
+        hasher.write_u32(self.state.hud.health().to_bits());
+        hasher.write_u16(self.state.hud.hand_item_id());
+        hasher.write_u16(self.state.hud.hand_item_damage());
+        hasher.write_u32(self.state.hud.hand_swing_progress().to_bits());
         hasher.write_u32(self.hand_equip_progress.to_bits());
-        hasher.write_u8(self.state.hand_use_kind);
-        hasher.write_u32(self.state.hand_use_progress.to_bits());
+        hasher.write_u8(self.state.hud.hand_use_kind());
+        hasher.write_u32(self.state.hud.hand_use_progress().to_bits());
         // First-person geometry is baked into dynamic vertex buffers. Lua can
         // change these matrices/flags without changing any vanilla hand state;
         // omitting them here lets an older mesh survive after a script callback
         // has produced the new pose.
         for transform in [
-            &self.state.first_person_arm_transform,
-            &self.state.first_person_item_transform,
+            &self.state.hud.first_person_arm_transform(),
+            &self.state.hud.first_person_item_transform(),
         ] {
             for value in transform.iter() {
                 hasher.write_u32(value.to_bits());
             }
         }
-        let flags = &self.state.fp_vanilla_flags;
+        let flags = &self.state.hud.fp_vanilla_flags();
         for enabled in [
             flags.base,
             flags.equip,
@@ -3577,8 +3626,8 @@ impl super::Renderer {
         ] {
             hasher.write_u8(u8::from(enabled));
         }
-        hasher.write_u32(self.state.local_skin_slim as u32);
-        hasher.write_u8(self.state.skin_parts);
+        hasher.write_u32(self.state.settings.local_skin_slim() as u32);
+        hasher.write_u8(self.state.settings.skin_parts());
         for value in [
             camera.position.x,
             camera.position.y,
@@ -3597,51 +3646,51 @@ impl super::Renderer {
         ] {
             hasher.write_u32(value.to_bits());
         }
-        if let Some(billboard) = &self.state.local_player_billboard {
+        if let Some(billboard) = &self.state.hud.local_player_billboard() {
             hasher.write_u64(super::entity_mesh_state_hash(billboard));
         }
         let mesh_hash = hasher.finish();
         if self.local_mesh_hash == Some(mesh_hash) {
-            self.state.local_batch_reused = true;
+            self.state.frame_profile.set_local_batch_reused(true);
             return;
         }
         self.local_mesh_hash = Some(mesh_hash);
-        self.state.local_batch_reused = false;
+        self.state.frame_profile.set_local_batch_reused(false);
 
         self.fp_arm_index_count = 0;
         self.fp_block_op_index_count = 0;
         self.fp_block_tr_index_count = 0;
 
-        if self.state.camera_mode == 0
-            && (self.state.chat_open || self.state.inventory_open || self.state.health <= 0.0)
+        if self.state.settings.camera_mode() == 0
+            && (self.state.hud.chat_open() || self.state.inventory.inventory_open() || self.state.hud.health() <= 0.0)
         {
             return;
         }
 
-        if self.state.camera_mode != 0 {
+        if self.state.settings.camera_mode() != 0 {
             // Third person uses the unified entity mesh path so skin, cape,
             // armor and held items can each bind their own atlas material.
             return;
         }
 
-        if self.state.hand_item_id == 0 {
+        if self.state.hud.hand_item_id() == 0 {
             // Render arm
             let pose = crate::render::first_person::FirstPersonPose {
-                swing_progress: self.state.hand_swing_progress,
+                swing_progress: self.state.hud.hand_swing_progress(),
                 equip_progress: 1.0 - self.hand_equip_progress,
                 render_arm_pitch: arm_pitch,
                 render_arm_yaw: arm_yaw,
-                use_kind: self.state.hand_use_kind,
-                use_progress: self.state.hand_use_progress,
-                script_transform: self.state.first_person_arm_transform,
-                vanilla_flags: self.state.fp_vanilla_flags.clone(),
+                use_kind: self.state.hud.hand_use_kind(),
+                use_progress: self.state.hud.hand_use_progress(),
+                script_transform: self.state.hud.first_person_arm_transform(),
+                vanilla_flags: self.state.hud.fp_vanilla_flags().clone(),
                 glint: false,
             };
             let (arm_verts, arm_idx) =
                 crate::render::entity::player_model::generate_first_person_arm_mesh(
                     camera,
-                    self.state.local_skin_slim,
-                    self.state.skin_parts & 0x08 != 0,
+                    self.state.settings.local_skin_slim(),
+                    self.state.settings.skin_parts() & 0x08 != 0,
                     &pose,
                 );
 
@@ -3649,7 +3698,7 @@ impl super::Renderer {
                 self.fp_arm_index_count = arm_idx.len() as u32;
                 super::resources::upload_dynamic_buffer(
                     &self.device,
-                    &mut self.allocator,
+                    self.resources.allocator_mut(),
                     &mut self.fp_arm_vertex_buffer,
                     &mut self.fp_arm_vertex_alloc,
                     &mut self.fp_arm_vertex_capacity,
@@ -3659,7 +3708,7 @@ impl super::Renderer {
 
                 super::resources::upload_dynamic_buffer(
                     &self.device,
-                    &mut self.allocator,
+                    self.resources.allocator_mut(),
                     &mut self.fp_arm_index_buffer,
                     &mut self.fp_arm_index_alloc,
                     &mut self.fp_arm_index_capacity,
@@ -3670,18 +3719,15 @@ impl super::Renderer {
         } else {
             // Render held block
             let pose = crate::render::first_person::FirstPersonPose {
-                swing_progress: self.state.hand_swing_progress,
+                swing_progress: self.state.hud.hand_swing_progress(),
                 equip_progress: 1.0 - self.hand_equip_progress,
                 render_arm_pitch: arm_pitch,
                 render_arm_yaw: arm_yaw,
-                use_kind: self.state.hand_use_kind,
-                use_progress: self.state.hand_use_progress,
-                script_transform: self.state.first_person_item_transform,
-                vanilla_flags: self.state.fp_vanilla_flags.clone(),
-                glint: self
-                    .state
-                    .hand_item_nbt
-                    .as_deref()
+                use_kind: self.state.hud.hand_use_kind(),
+                use_progress: self.state.hud.hand_use_progress(),
+                script_transform: self.state.hud.first_person_item_transform(),
+                vanilla_flags: self.state.hud.fp_vanilla_flags().clone(),
+                glint: self.state.hud.hand_item_nbt().as_deref()
                     .map(|nbt| {
                         crate::net::nbt::parse_root(nbt)
                             .ok()
@@ -3702,8 +3748,8 @@ impl super::Renderer {
             let (op_verts, op_idx, tr_verts, tr_idx, uses_item_atlas) =
                 crate::render::hud::hand::generate_held_block_mesh(
                     camera,
-                    self.state.hand_item_id,
-                    self.state.hand_item_damage,
+                    self.state.hud.hand_item_id(),
+                    self.state.hud.hand_item_damage(),
                     &pose,
                 );
             self.fp_block_uses_item_atlas = uses_item_atlas;
@@ -3712,7 +3758,7 @@ impl super::Renderer {
                 self.fp_block_op_index_count = op_idx.len() as u32;
                 super::resources::upload_dynamic_buffer(
                     &self.device,
-                    &mut self.allocator,
+                    self.resources.allocator_mut(),
                     &mut self.fp_block_op_vertex_buffer,
                     &mut self.fp_block_op_vertex_alloc,
                     &mut self.fp_block_op_vertex_capacity,
@@ -3722,7 +3768,7 @@ impl super::Renderer {
 
                 super::resources::upload_dynamic_buffer(
                     &self.device,
-                    &mut self.allocator,
+                    self.resources.allocator_mut(),
                     &mut self.fp_block_op_index_buffer,
                     &mut self.fp_block_op_index_alloc,
                     &mut self.fp_block_op_index_capacity,
@@ -3735,7 +3781,7 @@ impl super::Renderer {
                 self.fp_block_tr_index_count = tr_idx.len() as u32;
                 super::resources::upload_dynamic_buffer(
                     &self.device,
-                    &mut self.allocator,
+                    self.resources.allocator_mut(),
                     &mut self.fp_block_tr_vertex_buffer,
                     &mut self.fp_block_tr_vertex_alloc,
                     &mut self.fp_block_tr_vertex_capacity,
@@ -3745,7 +3791,7 @@ impl super::Renderer {
 
                 super::resources::upload_dynamic_buffer(
                     &self.device,
-                    &mut self.allocator,
+                    self.resources.allocator_mut(),
                     &mut self.fp_block_tr_index_buffer,
                     &mut self.fp_block_tr_index_alloc,
                     &mut self.fp_block_tr_index_capacity,
@@ -3782,7 +3828,7 @@ impl super::Renderer {
                 .and_then(|a| a.region_for("__white"))
                 .copied();
 
-            for selection in &self.state.block_selection_boxes {
+            for selection in self.state.hud.block_selection_boxes() {
                 let mn = [
                     selection.min[0] - inset,
                     selection.min[1] - inset,
@@ -3950,26 +3996,36 @@ impl super::Renderer {
         }
 
         // ── Dig crack overlay (vanilla destroy_stage_0..9) ──
-        if let (Some(pos), Some(atlas)) = (self.state.dig_position, self.entity_atlas.as_ref()) {
-            let progress = self.state.dig_progress.clamp(0.0, 1.0);
+        if let (Some(pos), Some(atlas)) = (self.state.hud.dig_position(), self.entity_atlas.as_ref()) {
+            let progress = self.state.hud.dig_progress().clamp(0.0, 1.0);
             if progress > 0.0 {
                 let stage = (progress * 10.0).floor().min(9.0) as u32;
-                let atlas_key = format!("destroy_{}", stage);
-                if let Some(region) = atlas.region_for(&atlas_key) {
+                // Destroy stages are a fixed 0..9 set — index a static table
+                // instead of formatting the stage number every frame.
+                const DESTROY_STAGE_KEYS: [&str; 10] = [
+                    "destroy_0", "destroy_1", "destroy_2", "destroy_3", "destroy_4",
+                    "destroy_5", "destroy_6", "destroy_7", "destroy_8", "destroy_9",
+                ];
+                let atlas_key = DESTROY_STAGE_KEYS[stage as usize];
+                if let Some(region) = atlas.region_for(atlas_key) {
                     // Selection boxes are already in world coordinates.  Apply the
                     // crack to every cuboid so stairs, fences and multipart blocks
                     // receive the same destroy overlay as their real geometry.
-                    let bounds_list = if self.state.block_selection_boxes.is_empty() {
-                        vec![SelectionBox {
-                            min: [pos[0] as f32, pos[1] as f32, pos[2] as f32],
-                            max: [
-                                pos[0] as f32 + 1.0,
-                                pos[1] as f32 + 1.0,
-                                pos[2] as f32 + 1.0,
-                            ],
-                        }]
+                    let fallback = SelectionBox {
+                        min: [pos[0] as f32, pos[1] as f32, pos[2] as f32],
+                        max: [
+                            pos[0] as f32 + 1.0,
+                            pos[1] as f32 + 1.0,
+                            pos[2] as f32 + 1.0,
+                        ],
+                    };
+                    // Iterate the selection boxes by reference instead of cloning
+                    // the whole list every frame.
+                    let selection_boxes = self.state.hud.block_selection_boxes();
+                    let bounds_list: &[SelectionBox] = if selection_boxes.is_empty() {
+                        std::slice::from_ref(&fallback)
                     } else {
-                        self.state.block_selection_boxes.clone()
+                        selection_boxes.as_slice()
                     };
                     for bounds in bounds_list {
                         let bx = bounds.min[0];
@@ -4092,7 +4148,7 @@ impl super::Renderer {
 
         super::resources::upload_dynamic_buffer(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             &mut self.block_vertex_buffer,
             &mut self.block_vertex_alloc,
             &mut self.block_vertex_capacity,
@@ -4101,7 +4157,7 @@ impl super::Renderer {
         );
         super::resources::upload_dynamic_buffer(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             &mut self.block_index_buffer,
             &mut self.block_index_alloc,
             &mut self.block_index_capacity,

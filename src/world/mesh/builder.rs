@@ -416,7 +416,7 @@ pub fn build_chunk_mesh(
                 }
 
                 // Render using JSON block model system
-                if model_cache.is_some()
+                if model_cache.as_ref().is_some()
                     && !block.is_liquid()
                     && block != Block::Fire
                     && block != Block::Chest
@@ -426,7 +426,7 @@ pub fn build_chunk_mesh(
                     // Its JSON model cannot express the dynamic UP property.
                     && block != Block::Vine
                 {
-                    let cache = model_cache.expect("model cache availability checked above");
+                    let cache = model_cache.as_ref().expect("model cache availability checked above");
                     if block_id != 0
                         && !crate::world::block_models::is_connection_state_block(block_id)
                     {

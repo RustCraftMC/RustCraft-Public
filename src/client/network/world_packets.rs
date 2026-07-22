@@ -1,8 +1,15 @@
 use crate::audio::{self, AudioBackend};
+use crate::client::network::{MeshList, SignUpdateList};
 use crate::client::particles::ParticleSystem;
 use crate::client::player::Player;
 use crate::net;
-use crate::world::{self, mesh::ChunkMesh};
+use crate::world;
+use std::borrow::Cow;
+
+/// Sound event names reused on hot packet paths. Keeping them as `const`
+/// avoids re-allocating the same `&'static str` lookup each time the matching
+/// packet is handled and makes the intent self-documenting.
+const SOUND_EXPLODE: &str = "random.explode";
 
 pub(super) fn handle_packet(
     world: &mut world::World,
@@ -11,8 +18,8 @@ pub(super) fn handle_packet(
     player: &mut Player,
     dimension: i8,
     packet: Option<net::packet::ClientboundPacket>,
-    meshes: &mut Vec<ChunkMesh>,
-    sign_updates: &mut Vec<(i32, i32, i32, [String; 4])>,
+    meshes: &mut MeshList,
+    sign_updates: &mut SignUpdateList,
 ) -> Option<net::packet::ClientboundPacket> {
     let packet = packet?;
     match packet {
@@ -166,8 +173,9 @@ pub(super) fn handle_packet(
             player.velocity.y += player_motion[1] as f64;
             player.velocity.z += player_motion[2] as f64;
             particles.spawn_explosion(nalgebra::Point3::new(x, y, z), radius, records.len());
+            let explode_name: Cow<'static, str> = Cow::Borrowed(SOUND_EXPLODE);
             audio.play(audio::SoundEvent {
-                name: "random.explode".to_string(),
+                name: explode_name.into_owned(),
                 category: audio::SoundCategory::Blocks,
                 volume: 1.0,
                 pitch: 1.0,
@@ -195,16 +203,20 @@ pub(super) fn handle_packet(
     None
 }
 
-fn nbt_str(
-    compound: &std::collections::HashMap<String, crate::net::nbt::NbtTag>,
+fn nbt_str<'a>(
+    compound: &'a std::collections::HashMap<String, crate::net::nbt::NbtTag>,
     key: &str,
-) -> Option<String> {
-    compound.get(key)?.as_str().map(|s| s.to_string())
+) -> Option<Cow<'a, str>> {
+    compound.get(key)?.as_str().map(Cow::Borrowed)
 }
 
 pub(crate) fn json_to_plain(raw: &str) -> String {
+    json_to_plain_cow(raw).into_owned()
+}
+
+fn json_to_plain_cow(raw: &str) -> Cow<'_, str> {
     if raw.is_empty() {
-        return raw.to_string();
+        return Cow::Borrowed(raw);
     }
     fn append_component(value: &serde_json::Value, out: &mut String) {
         match value {
@@ -233,9 +245,9 @@ pub(crate) fn json_to_plain(raw: &str) -> String {
         .map(|value| {
             let mut out = String::new();
             append_component(&value, &mut out);
-            out
+            Cow::Owned(out)
         })
-        .unwrap_or_else(|_| raw.to_string())
+        .unwrap_or_else(|_| Cow::Borrowed(raw))
 }
 
 #[cfg(test)]

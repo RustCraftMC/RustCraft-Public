@@ -16,7 +16,7 @@ impl Renderer {
         let sh = metrics.sh;
         let gs = metrics.gs;
         draw_title(
-            self,
+            &mut self.font,
             font_gui,
             sw / 2.0,
             16.0 * gs,
@@ -25,7 +25,7 @@ impl Renderer {
             gs,
         );
 
-        let packs = self.state.shader_packs.clone();
+        let packs = self.state.server_list.shader_packs().clone();
         let list = GuiScrollList::new(
             sw / 2.0 - 155.0 * gs,
             38.0 * gs,
@@ -33,9 +33,9 @@ impl Renderer {
             (sh - 112.0 * gs).max(40.0 * gs),
             34.0 * gs,
             packs.len(),
-            self.state.shader_pack_scroll,
+            self.state.server_list.shader_pack_scroll(),
         );
-        self.state.shader_pack_scroll = list.first_row;
+        self.state.server_list.set_shader_pack_scroll(list.first_row);
         font_gui.fill_rect(
             list.x,
             list.y,
@@ -47,7 +47,7 @@ impl Renderer {
         for index in list.visible_range() {
             let pack = &packs[index];
             let y = list.row_y(index);
-            let selected = self.state.selected_shader_pack.as_deref() == Some(&pack.source_name);
+            let selected = self.state.server_list.selected_shader_pack().as_deref() == Some(&pack.source_name);
             let color = if selected {
                 [0.18, 0.38, 0.18, 0.9]
             } else if !pack.compatible {
@@ -96,13 +96,13 @@ impl Renderer {
             sh - 69.0 * gs,
             &format!(
                 "{} | Vulkan RT: {} | FSR 3: {}",
-                self.state.shader_pack_status,
-                if self.state.ray_tracing_available {
+                self.state.server_list.shader_pack_status(),
+                if self.state.server_list.ray_tracing_available() {
                     "Yes"
                 } else {
                     "No"
                 },
-                if self.state.fsr3_available {
+                if self.state.server_list.fsr3_available() {
                     "Yes"
                 } else {
                     "SDK not linked"
@@ -114,7 +114,7 @@ impl Renderer {
 
         let y = sh - 46.0 * gs;
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -123,7 +123,7 @@ impl Renderer {
             "Open Folder",
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -132,7 +132,7 @@ impl Renderer {
             "Off",
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,

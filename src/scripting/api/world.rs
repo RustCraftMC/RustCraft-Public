@@ -213,10 +213,11 @@ impl WorldApiState {
         true
     }
 
-    /// Applies exact changed block entries while retaining the rest of the
-    /// cached cube. This keeps server block animations proportional to the
-    /// number of changed positions instead of rebuilding all 31^3 entries.
-    pub(crate) fn set_snapshot_patching_blocks(&mut self, mut snapshot: WorldSnapshot) -> bool {
+    /// Applies changed block entries while retaining the rest of the cached
+    /// cube. When the player block is unchanged (patch path), entries are
+    /// appended directly. When the player crossed a block boundary (shift
+    /// path), stale entries outside the new range are removed before appending.
+    pub(crate) fn set_snapshot_merging_blocks(&mut self, mut snapshot: WorldSnapshot) -> bool {
         let Some(mut previous) = self.snapshot.take() else {
             return false;
         };
@@ -224,39 +225,14 @@ impl WorldApiState {
         sanitize_snapshot_blocks(&mut snapshot);
         let same_player_block = player_block_position(previous.player_position)
             == player_block_position(snapshot.player_position);
-        debug_assert!(
-            same_player_block,
-            "cached world block patches require the same player block"
-        );
+        let mut blocks = std::mem::take(&mut previous.blocks);
         if !same_player_block {
-            self.snapshot = Some(previous);
-            return false;
+            let player_block = player_block_position(snapshot.player_position);
+            blocks.retain(|&(x, y, z), _| valid_block_coordinate(x, y, z, player_block));
         }
-        let mut blocks = std::mem::take(&mut previous.blocks);
         blocks.append(&mut snapshot.blocks);
         snapshot.blocks = blocks;
-        self.snapshot = Some(snapshot);
-        true
-    }
-
-    /// Slides the cached block volume after the player crosses a block
-    /// boundary. `snapshot.blocks` contains only newly entered coordinates;
-    /// overlapping nodes are retained instead of rebuilding all 29,791 entries.
-    pub(crate) fn set_snapshot_shifting_blocks(&mut self, mut snapshot: WorldSnapshot) -> bool {
-        let Some(mut previous) = self.snapshot.take() else {
-            return false;
-        };
-
-        sanitize_snapshot_metadata(&mut snapshot);
-        sanitize_snapshot_blocks(&mut snapshot);
-        let player_block = player_block_position(snapshot.player_position);
-        let mut blocks = std::mem::take(&mut previous.blocks);
-        blocks.retain(|&(x, y, z), _| valid_block_coordinate(x, y, z, player_block));
-        blocks.append(&mut snapshot.blocks);
-        snapshot.blocks = blocks;
-        if snapshot.blocks.len() > MAX_BLOCK_SNAPSHOT_ENTRIES {
-            // A correct sliding cube is always <= 31^3 entries. Retain the
-            // public API safety limit even if a future caller supplies a bad patch.
+        if !same_player_block && snapshot.blocks.len() > MAX_BLOCK_SNAPSHOT_ENTRIES {
             sanitize_snapshot_blocks(&mut snapshot);
         }
         self.snapshot = Some(snapshot);
@@ -1109,7 +1085,7 @@ mod tests {
                 ..BlockSnapshot::default()
             },
         );
-        assert!(state.set_snapshot_patching_blocks(patch));
+        assert!(state.set_snapshot_merging_blocks(patch));
 
         let snapshot = state.snapshot().unwrap();
         assert_eq!(snapshot.game_time, 5);
@@ -1160,7 +1136,7 @@ mod tests {
                 .filter(|(position, _)| !expected.contains_key(position))
                 .map(|(&position, &block)| (position, block))
                 .collect();
-            assert!(state.set_snapshot_shifting_blocks(WorldSnapshot {
+            assert!(state.set_snapshot_merging_blocks(WorldSnapshot {
                 player_position: [
                     next_center.0 as f64,
                     next_center.1 as f64,
@@ -1182,7 +1158,7 @@ mod tests {
         let mut patch = WorldSnapshot::default();
         patch.blocks.insert((0, 64, 0), BlockSnapshot::default());
 
-        assert!(!state.set_snapshot_patching_blocks(patch));
+        assert!(!state.set_snapshot_merging_blocks(patch));
         assert!(state.snapshot().is_none());
     }
 }

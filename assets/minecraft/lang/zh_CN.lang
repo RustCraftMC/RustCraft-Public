@@ -186,7 +186,7 @@ generator.debug_all_block_states=调试模式
 generator.amplified.info=注意：仅供娱乐，需要高配置电脑
 
 selectServer.title=选择服务器
-selectServer.empty=空
+selectServer.empty=还没有服务器。点「添加服务器」或「直接连接」。
 selectServer.select=加入服务器
 selectServer.direct=直接连接
 selectServer.edit=编辑
@@ -1411,3 +1411,15 @@ itemGroup.combat=战斗
 itemGroup.brewing=酿造
 itemGroup.materials=材料
 itemGroup.inventory=生存模式物品栏
+
+gui.achievements=成就
+gui.stats=统计信息
+rustcraft.mainmenu.altManager=账号管理
+rustcraft.mainmenu.modding=模组
+
+rustcraft.modding.configTitle=模组配置
+rustcraft.modding.configSubtitle=设置会校验后保存到该模组的私有数据目录
+rustcraft.modding.configEmpty=此模组没有可配置项
+rustcraft.modding.configLocked=请先断开连接，再修改协议转换模组的配置
+rustcraft.modding.configHints=左右：调整   R：重置   Esc：返回
+rustcraft.modding.resetAll=全部重置

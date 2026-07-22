@@ -1,11 +1,12 @@
 //! Lua mod inventory, capability inspection, and runtime controls.
 
 use super::scroll_list::GuiScrollList;
-use super::{draw_button, draw_button_enabled, draw_title};
+use super::{draw_button, draw_button_enabled};
 use crate::render::gui::widgets::MenuMetrics;
 use crate::render::gui::GuiVertexBuilder;
 use crate::render::{ModManagerRow, Renderer};
 use crate::ui::button_ids as btn;
+use crate::ui::text::UiText;
 
 impl Renderer {
     pub(super) fn draw_modding_screen(
@@ -17,13 +18,12 @@ impl Renderer {
         let sw = metrics.sw;
         let sh = metrics.sh;
         let gs = metrics.gs;
-        let text = self.state.ui_text.clone();
         let list_width = (420.0 * gs).min((sw - 24.0 * gs).max(200.0 * gs));
         let list_x = (sw - list_width) / 2.0;
         let list_y = 36.0 * gs;
         let detail_y = sh - 121.0 * gs;
         let list_height = (detail_y - list_y - 4.0 * gs).max(38.0 * gs);
-        let rows = self.state.modding_rows.clone();
+        let rows = self.state.server_list.modding_rows().clone();
         let list = GuiScrollList::new(
             list_x,
             list_y,
@@ -31,19 +31,12 @@ impl Renderer {
             list_height,
             38.0 * gs,
             rows.len(),
-            self.state.modding_scroll,
+            self.state.server_list.modding_scroll(),
         );
-        self.state.modding_scroll = list.first_row;
+        self.state.server_list.set_modding_scroll(list.first_row);
 
-        draw_title(
-            self,
-            font_gui,
-            sw / 2.0,
-            16.0 * gs,
-            text.get("rustcraft.modding.title"),
-            metrics.font_sz,
-            gs,
-        );
+        self.draw_standard_screen(metrics, font_gui, "rustcraft.modding.title", 16.0 * gs, metrics.font_sz);
+        let text = self.state.settings.ui_text();
         list.draw_background(font_gui);
         if rows.is_empty() {
             font_gui.draw_text_centered(
@@ -57,7 +50,8 @@ impl Renderer {
         } else {
             for index in list.visible_range() {
                 draw_mod_row(
-                    self,
+                    &mut self.font,
+                    text,
                     metrics,
                     widget_gui,
                     font_gui,
@@ -66,18 +60,19 @@ impl Renderer {
                     list_width - 12.0 * gs,
                     &rows[index],
                     index,
-                    index == self.state.modding_selected,
+                    index == self.state.server_list.modding_selected(),
                 );
             }
         }
         list.draw_scrollbar(font_gui, gs);
         list.draw_edge_fades(font_gui, gs);
 
-        let selected = rows.get(self.state.modding_selected);
+        let selected = rows.get(self.state.server_list.modding_selected());
         let connection_locked = selected
-            .is_some_and(|row| self.state.modding_connection_active && row.protocol_translator);
+            .is_some_and(|row| self.state.server_list.modding_connection_active() && row.protocol_translator);
         draw_mod_details(
-            self,
+            &mut self.font,
+            text,
             metrics,
             font_gui,
             list_x,
@@ -91,7 +86,7 @@ impl Renderer {
             text.get("rustcraft.modding.disconnectTranslator")
                 .to_string()
         } else {
-            self.state.modding_status.clone()
+            self.state.server_list.modding_status().clone()
         };
         let status = fit_text(&self.font, &status, metrics.font_sz * 0.72, list_width);
         font_gui.draw_text_centered(
@@ -112,7 +107,7 @@ impl Renderer {
         let has_selection = selected.is_some();
         let is_enabled = selected.is_some_and(|row| row.enabled);
         draw_button_enabled(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -126,7 +121,7 @@ impl Renderer {
             has_selection && !connection_locked,
         );
         draw_button_enabled(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -141,7 +136,7 @@ impl Renderer {
             is_enabled && !connection_locked,
         );
         draw_button_enabled(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -156,7 +151,7 @@ impl Renderer {
             selected.is_some_and(|row| row.config_entries > 0),
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -170,7 +165,7 @@ impl Renderer {
             text.get("rustcraft.modding.reloadAll"),
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -182,7 +177,8 @@ impl Renderer {
 }
 
 fn draw_mod_row(
-    renderer: &mut Renderer,
+    font: &mut crate::ui::font::FontRenderer,
+    text: &UiText,
     metrics: &MenuMetrics,
     widget_gui: &mut GuiVertexBuilder,
     font_gui: &mut GuiVertexBuilder,
@@ -195,16 +191,10 @@ fn draw_mod_row(
 ) {
     let gs = metrics.gs;
     let status = if row.enabled {
-        renderer
-            .state
-            .ui_text
-            .get("rustcraft.modding.enabled")
+        text.get("rustcraft.modding.enabled")
             .to_string()
     } else {
-        renderer
-            .state
-            .ui_text
-            .get("rustcraft.modding.disabled")
+        text.get("rustcraft.modding.disabled")
             .to_string()
     };
     let status_color = if row.enabled {
@@ -229,9 +219,9 @@ fn draw_mod_row(
     }
     widget_gui.register_button(btn::MODDING_ROW_BASE + index as u32, x, y, width, 34.0 * gs);
     let title = format!("{}  v{}", row.name, row.version);
-    let title = fit_text(&renderer.font, &title, metrics.font_sz, width - 82.0 * gs);
+    let title = fit_text(font, &title, metrics.font_sz, width - 82.0 * gs);
     font_gui.draw_text(
-        &mut renderer.font,
+        font,
         x + 4.0 * gs,
         y + 3.0 * gs,
         &title,
@@ -239,13 +229,13 @@ fn draw_mod_row(
         [1.0, 1.0, 1.0, 1.0],
     );
     let id = fit_text(
-        &renderer.font,
+        font,
         &row.id,
         metrics.font_sz * 0.72,
         width - 8.0 * gs,
     );
     font_gui.draw_text(
-        &mut renderer.font,
+        font,
         x + width - 58.0 * gs,
         y + 3.0 * gs,
         &status,
@@ -253,14 +243,13 @@ fn draw_mod_row(
         status_color,
     );
     font_gui.draw_text(
-        &mut renderer.font,
+        font,
         x + 4.0 * gs,
         y + 16.0 * gs,
         &id,
         metrics.font_sz * 0.72,
         [0.72, 0.72, 0.72, 1.0],
     );
-    let text = &renderer.state.ui_text;
     let permissions = format!(
         "{}: {}{}",
         text.get("rustcraft.modding.permissions"),
@@ -276,7 +265,7 @@ fn draw_mod_row(
         }
     );
     font_gui.draw_text(
-        &mut renderer.font,
+        font,
         x + 4.0 * gs,
         y + 26.0 * gs,
         &permissions,
@@ -290,7 +279,8 @@ fn draw_mod_row(
 }
 
 fn draw_mod_details(
-    renderer: &mut Renderer,
+    font: &mut crate::ui::font::FontRenderer,
+    text: &UiText,
     metrics: &MenuMetrics,
     font_gui: &mut GuiVertexBuilder,
     x: f32,
@@ -304,13 +294,10 @@ fn draw_mod_details(
     font_gui.fill_rect(x, y, width, 1.0 * gs, [0.25, 0.82, 0.85, 0.75]);
     let Some(row) = selected else {
         font_gui.draw_text_centered(
-            &mut renderer.font,
+            font,
             x + width / 2.0,
             y + 19.0 * gs,
-            renderer
-                .state
-                .ui_text
-                .get("rustcraft.modding.inspectPrompt"),
+            text.get("rustcraft.modding.inspectPrompt"),
             metrics.font_sz * 0.78,
             [0.65, 0.65, 0.65, 1.0],
         );
@@ -321,29 +308,26 @@ fn draw_mod_details(
         "{}  [{}]{}  {} {}",
         row.name,
         if row.enabled {
-            renderer.state.ui_text.get("rustcraft.modding.running")
+            text.get("rustcraft.modding.running")
         } else {
-            renderer.state.ui_text.get("rustcraft.modding.stopped")
+            text.get("rustcraft.modding.stopped")
         },
         if row.protocol_translator {
-            renderer
-                .state
-                .ui_text
-                .get("rustcraft.modding.protocolTranslator")
+            text.get("rustcraft.modding.protocolTranslator")
         } else {
             ""
         },
         row.config_entries,
-        renderer.state.ui_text.get("rustcraft.modding.settings"),
+        text.get("rustcraft.modding.settings"),
     );
     let header = fit_text(
-        &renderer.font,
+        font,
         &header,
         metrics.font_sz * 0.82,
         width - 8.0 * gs,
     );
     font_gui.draw_text(
-        &mut renderer.font,
+        font,
         x + 4.0 * gs,
         y + 5.0 * gs,
         &header,
@@ -356,18 +340,18 @@ fn draw_mod_details(
     );
 
     let granted = permission_line(
-        renderer.state.ui_text.get("rustcraft.modding.granted"),
-        renderer.state.ui_text.get("gui.none"),
+        text.get("rustcraft.modding.granted"),
+        text.get("gui.none"),
         &row.granted_permissions,
     );
     let granted = fit_text(
-        &renderer.font,
+        font,
         &granted,
         metrics.font_sz * 0.66,
         width - 8.0 * gs,
     );
     font_gui.draw_text(
-        &mut renderer.font,
+        font,
         x + 4.0 * gs,
         y + 18.0 * gs,
         &granted,
@@ -376,18 +360,18 @@ fn draw_mod_details(
     );
 
     let denied = permission_line(
-        renderer.state.ui_text.get("rustcraft.modding.denied"),
-        renderer.state.ui_text.get("gui.none"),
+        text.get("rustcraft.modding.denied"),
+        text.get("gui.none"),
         &row.denied_permissions,
     );
     let denied = fit_text(
-        &renderer.font,
+        font,
         &denied,
         metrics.font_sz * 0.66,
         width - 8.0 * gs,
     );
     font_gui.draw_text(
-        &mut renderer.font,
+        font,
         x + 4.0 * gs,
         y + 29.0 * gs,
         &denied,
@@ -400,10 +384,10 @@ fn draw_mod_details(
     );
 
     font_gui.draw_text(
-        &mut renderer.font,
+        font,
         x + 4.0 * gs,
         y + 39.0 * gs,
-        renderer.state.ui_text.get("rustcraft.modding.shortcuts"),
+        text.get("rustcraft.modding.shortcuts"),
         metrics.font_sz * 0.56,
         [0.48, 0.65, 0.68, 1.0],
     );

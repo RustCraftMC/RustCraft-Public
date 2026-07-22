@@ -1,5 +1,5 @@
 use super::scroll_list::GuiScrollList;
-use super::{draw_button, draw_pack_icon, draw_title};
+use super::{draw_button, draw_pack_icon};
 use crate::client::app::ResourcePackInfo;
 use crate::render::gui::widgets::MenuMetrics;
 use crate::render::gui::GuiVertexBuilder;
@@ -13,7 +13,6 @@ impl Renderer {
         widget_gui: &mut GuiVertexBuilder,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        let text = self.state.ui_text.clone();
         let sw = metrics.sw;
         let sh = metrics.sh;
         let gs = metrics.gs;
@@ -23,17 +22,10 @@ impl Renderer {
         let left_x = sw / 2.0 - 204.0 * gs;
         let right_x = sw / 2.0 + 4.0 * gs;
 
-        draw_title(
-            self,
-            font_gui,
-            sw / 2.0,
-            16.0 * gs,
-            text.get("resourcePack.title"),
-            metrics.font_sz,
-            gs,
-        );
+        self.draw_standard_screen(metrics, font_gui, "resourcePack.title", 16.0 * gs, metrics.font_sz);
+        let text = self.state.settings.ui_text();
 
-        let available_packs = self.state.available_resource_packs.clone();
+        let available_packs = self.state.server_list.available_resource_packs().clone();
         let available = GuiScrollList::new(
             left_x,
             list_top + 16.0 * gs,
@@ -41,12 +33,12 @@ impl Renderer {
             list_height - 16.0 * gs,
             36.0 * gs,
             available_packs.len(),
-            self.state.available_resource_pack_scroll,
+            self.state.server_list.available_resource_pack_scroll(),
         );
-        self.state.available_resource_pack_scroll = available.first_row;
+        self.state.server_list.set_available_resource_pack_scroll(available.first_row);
         draw_list_background(font_gui, left_x, list_top, list_width, list_height);
         draw_list_header(
-            self,
+            &mut self.font,
             metrics,
             font_gui,
             left_x,
@@ -57,7 +49,7 @@ impl Renderer {
         for index in available.visible_range() {
             let y = available.row_y(index);
             draw_pack_entry(
-                self,
+                &mut self.font,
                 metrics,
                 widget_gui,
                 font_gui,
@@ -74,7 +66,7 @@ impl Renderer {
         available.draw_scrollbar(font_gui, gs);
         available.draw_edge_fades(font_gui, gs);
 
-        let selected_packs = self.state.selected_resource_packs.clone();
+        let selected_packs = self.state.server_list.selected_resource_packs().clone();
         let selected = GuiScrollList::new(
             right_x,
             list_top + 16.0 * gs,
@@ -82,12 +74,12 @@ impl Renderer {
             list_height - 16.0 * gs,
             36.0 * gs,
             selected_packs.len(),
-            self.state.selected_resource_pack_scroll,
+            self.state.server_list.selected_resource_pack_scroll(),
         );
-        self.state.selected_resource_pack_scroll = selected.first_row;
+        self.state.server_list.set_selected_resource_pack_scroll(selected.first_row);
         draw_list_background(font_gui, right_x, list_top, list_width, list_height);
         draw_list_header(
-            self,
+            &mut self.font,
             metrics,
             font_gui,
             right_x,
@@ -98,7 +90,7 @@ impl Renderer {
         for index in selected.visible_range() {
             let y = selected.row_y(index);
             draw_pack_entry(
-                self,
+                &mut self.font,
                 metrics,
                 widget_gui,
                 font_gui,
@@ -119,7 +111,7 @@ impl Renderer {
 
         let button_y = sh - 48.0 * gs;
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -128,7 +120,7 @@ impl Renderer {
             text.get("resourcePack.openFolder"),
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -154,7 +146,7 @@ fn draw_list_background(gui: &mut GuiVertexBuilder, x: f32, y: f32, width: f32, 
 }
 
 fn draw_list_header(
-    renderer: &mut Renderer,
+    font: &mut crate::ui::font::FontRenderer,
     metrics: &MenuMetrics,
     font_gui: &mut GuiVertexBuilder,
     x: f32,
@@ -163,7 +155,7 @@ fn draw_list_header(
     label: &str,
 ) {
     font_gui.draw_text_centered(
-        &mut renderer.font,
+        font,
         x + width / 2.0,
         y + 3.0 * metrics.gs,
         label,
@@ -174,7 +166,7 @@ fn draw_list_header(
 
 #[allow(clippy::too_many_arguments)]
 fn draw_pack_entry(
-    renderer: &mut Renderer,
+    font: &mut crate::ui::font::FontRenderer,
     metrics: &MenuMetrics,
     widget_gui: &mut GuiVertexBuilder,
     font_gui: &mut GuiVertexBuilder,
@@ -237,23 +229,23 @@ fn draw_pack_entry(
     if hovered {
         font_gui.fill_rect(x, y, 32.0 * gs, 32.0 * gs, [0.0, 0.0, 0.0, 0.55]);
         if available {
-            draw_pack_control(renderer, font_gui, x + 16.0 * gs, y + 10.0 * gs, ">", gs);
+            draw_pack_control(font_gui, font, x + 16.0 * gs, y + 10.0 * gs, ">", gs);
         } else if !pack.is_default {
-            draw_pack_control(renderer, font_gui, x + 8.0 * gs, y + 10.0 * gs, "<", gs);
+            draw_pack_control(font_gui, font, x + 8.0 * gs, y + 10.0 * gs, "<", gs);
             if can_move_up {
-                draw_pack_control(renderer, font_gui, x + 24.0 * gs, y + 2.0 * gs, "^", gs);
+                draw_pack_control(font_gui, font, x + 24.0 * gs, y + 2.0 * gs, "^", gs);
             }
             if can_move_down {
-                draw_pack_control(renderer, font_gui, x + 24.0 * gs, y + 18.0 * gs, "v", gs);
+                draw_pack_control(font_gui, font, x + 24.0 * gs, y + 18.0 * gs, "v", gs);
             }
         }
     }
 
     let text_x = x + 34.0 * gs;
     let text_width = 157.0 * gs;
-    let name = fit_text(&mut renderer.font, &pack.name, metrics.font_sz, text_width);
+    let name = fit_text(font, &pack.name, metrics.font_sz, text_width);
     font_gui.draw_text(
-        &mut renderer.font,
+        font,
         text_x,
         y + gs,
         &name,
@@ -266,7 +258,7 @@ fn draw_pack_entry(
         "Incompatible with Minecraft 1.8.9"
     };
     for (line, description) in wrap_text(
-        &mut renderer.font,
+        font,
         description,
         metrics.font_sz * 0.72,
         text_width,
@@ -276,7 +268,7 @@ fn draw_pack_entry(
     .enumerate()
     {
         font_gui.draw_text(
-            &mut renderer.font,
+            font,
             text_x,
             y + (13 + 10 * line) as f32 * gs,
             &description,
@@ -287,15 +279,15 @@ fn draw_pack_entry(
 }
 
 fn draw_pack_control(
-    renderer: &mut Renderer,
     font_gui: &mut GuiVertexBuilder,
+    font: &mut crate::ui::font::FontRenderer,
     x: f32,
     y: f32,
     symbol: &str,
     gs: f32,
 ) {
     font_gui.draw_text_centered(
-        &mut renderer.font,
+        font,
         x,
         y,
         symbol,

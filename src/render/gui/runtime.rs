@@ -28,7 +28,7 @@ impl super::super::Renderer {
         // Widget texture
         let (wi, wv, ws, wa, _) = Self::load_gui_texture_from_resolver(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             resolver,
             "minecraft/textures/gui/widgets.png",
             self.command_pool,
@@ -41,7 +41,7 @@ impl super::super::Renderer {
 
         let (ii, iv, is_, ia, inv_size) = Self::load_gui_texture_from_resolver(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             resolver,
             "minecraft/textures/gui/container/inventory.png",
             self.command_pool,
@@ -55,7 +55,7 @@ impl super::super::Renderer {
 
         let (gi, gv, gs, ga) = Self::load_container_gui_atlas(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             resolver,
             self.command_pool,
             self.queue,
@@ -67,7 +67,7 @@ impl super::super::Renderer {
 
         let (iti, itv, its, ita) = Self::load_item_icon_atlas_from_resolver(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             resolver,
             self.command_pool,
             self.queue,
@@ -83,7 +83,7 @@ impl super::super::Renderer {
         Self::write_descriptors(
             &self.device,
             &self.fp_item_descriptor_sets,
-            &self.uniform_buffers,
+            self.resources.uniform_buffers(),
             self.gui_items_view,
             self.gui_items_sampler,
         );
@@ -91,7 +91,7 @@ impl super::super::Renderer {
         // Icons texture (icons.png - hearts, hunger, armor, XP bar)
         let (icon_i, icon_v, icon_s, icon_a, _) = Self::load_gui_texture_from_resolver(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             resolver,
             "minecraft/textures/gui/icons.png",
             self.command_pool,
@@ -105,7 +105,7 @@ impl super::super::Renderer {
         // Creative inventory atlas (tabs + tab panel backgrounds)
         let (ci, cv, cs, ca) = Self::load_creative_gui_atlas(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             resolver,
             self.command_pool,
             self.queue,
@@ -117,7 +117,7 @@ impl super::super::Renderer {
 
         let (obi, obv, obs, oba, _) = Self::load_gui_texture_from_resolver(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             resolver,
             "minecraft/textures/gui/options_background.png",
             self.command_pool,
@@ -131,7 +131,7 @@ impl super::super::Renderer {
         // Underwater overlay texture
         let (uwi, uwv, uws, uwa, _) = Self::load_gui_texture_from_resolver(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             resolver,
             "minecraft/textures/misc/underwater.png",
             self.command_pool,
@@ -145,7 +145,7 @@ impl super::super::Renderer {
         // Font atlas (initially empty, populated lazily by fontdue)
         let (fi, fv, fs, fa) = Self::create_empty_texture(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             self.font.atlas_width,
             self.font.atlas_height,
         );
@@ -160,7 +160,7 @@ impl super::super::Renderer {
         // GUI uniform buffer
         let (ub, ua) = Self::create_uniform_buf(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             std::mem::size_of::<super::GuiUniforms>(),
         );
         self.gui_uniform_buffer = ub;
@@ -180,7 +180,7 @@ impl super::super::Renderer {
 
         let (pi, pv, ps, pa) = Self::load_panorama_atlas(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             resolver,
             self.command_pool,
             self.queue,
@@ -190,7 +190,7 @@ impl super::super::Renderer {
         self.panorama_sampler = ps;
         self.panorama_alloc = Some(pa);
 
-        let (pubuf, palloc) = Self::create_uniform_buf(&self.device, &mut self.allocator, 8);
+        let (pubuf, palloc) = Self::create_uniform_buf(&self.device, self.resources.allocator_mut(), 8);
         self.panorama_uniform_buffer = pubuf;
         self.panorama_uniform_alloc = palloc;
 
@@ -831,6 +831,34 @@ impl super::super::Renderer {
         Self::upload_gui_texture(device, allocator, &pixels, w, h, command_pool, queue)
     }
 
+    /// Loads a GUI texture through the asset resolver, falling back to a 1x1
+    /// transparent placeholder when the asset is missing or undecodable. The
+    /// renderer keeps running with a blank slot instead of panicking, so a
+    /// single bad texture does not take down the whole UI.
+    fn load_texture_or_placeholder(
+        resolver: &mut crate::assets::resolver::AssetResolver,
+        resource_path: &str,
+    ) -> image::RgbaImage {
+        let bytes = match resolver.read_bytes(resource_path) {
+            Some(bytes) => bytes,
+            None => {
+                log::warn!(
+                    "Failed to load GUI texture {resource_path}: asset not found, using placeholder"
+                );
+                return image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 0]));
+            }
+        };
+        match image::load_from_memory(&bytes) {
+            Ok(img) => img.to_rgba8(),
+            Err(e) => {
+                log::warn!(
+                    "Failed to decode GUI texture {resource_path}: {e}, using placeholder"
+                );
+                image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 0, 0]))
+            }
+        }
+    }
+
     /// Build a grid atlas out of vanilla 256x256-canvas GUI textures.
     ///
     /// Resource packs ship these canvases at any power-of-two multiple of 256
@@ -852,14 +880,7 @@ impl super::super::Renderer {
         );
         let images: Vec<image::RgbaImage> = resource_paths
             .iter()
-            .map(|resource_path| {
-                let bytes = resolver
-                    .read_bytes(resource_path)
-                    .unwrap_or_else(|| panic!("Failed to load GUI texture: {resource_path}"));
-                image::load_from_memory(&bytes)
-                    .unwrap_or_else(|_| panic!("Failed to decode GUI texture: {resource_path}"))
-                    .to_rgba8()
-            })
+            .map(|resource_path| Self::load_texture_or_placeholder(resolver, resource_path))
             .collect();
         let scale = images
             .iter()
@@ -1059,12 +1080,7 @@ impl super::super::Renderer {
         gpu_allocator::vulkan::Allocation,
         (u32, u32),
     ) {
-        let bytes = resolver
-            .read_bytes(resource_path)
-            .unwrap_or_else(|| panic!("Failed to load GUI texture: {resource_path}"));
-        let img = image::load_from_memory(&bytes)
-            .unwrap_or_else(|_| panic!("Failed to decode GUI texture: {resource_path}"))
-            .to_rgba8();
+        let img = Self::load_texture_or_placeholder(resolver, resource_path);
         let (w, h) = img.dimensions();
         let pixels = img.into_raw();
         let (image, view, sampler, allocation) =
@@ -1182,7 +1198,7 @@ impl super::super::Renderer {
         for (path, image, view, sampler, alloc) in single_textures {
             let new = Self::load_gui_texture_from_resolver(
                 &self.device,
-                &mut self.allocator,
+                self.resources.allocator_mut(),
                 resolver,
                 path,
                 self.command_pool,
@@ -1191,7 +1207,7 @@ impl super::super::Renderer {
             let (new_img, new_view, new_samp, new_alloc, _tex_size) = new;
             Self::replace_gui_texture_slot(
                 &self.device,
-                &mut self.allocator,
+                self.resources.allocator_mut(),
                 image,
                 view,
                 sampler,
@@ -1202,14 +1218,14 @@ impl super::super::Renderer {
 
         let new = Self::load_container_gui_atlas(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             resolver,
             self.command_pool,
             self.queue,
         );
         Self::replace_gui_texture_slot(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             &mut self.gui_generic54_image,
             &mut self.gui_generic54_view,
             &mut self.gui_generic54_sampler,
@@ -1219,14 +1235,14 @@ impl super::super::Renderer {
 
         let new = Self::load_creative_gui_atlas(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             resolver,
             self.command_pool,
             self.queue,
         );
         Self::replace_gui_texture_slot(
             &self.device,
-            &mut self.allocator,
+            self.resources.allocator_mut(),
             &mut self.gui_creative_image,
             &mut self.gui_creative_view,
             &mut self.gui_creative_sampler,
@@ -1566,8 +1582,8 @@ impl super::super::Renderer {
     // --- Draw GUI overlay (called within render pass) ---
 
     pub(crate) fn update_gui_uniforms(&mut self) {
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         if sw == self.cached_gui_vp_w && sh == self.cached_gui_vp_h {
             return;
         }
@@ -1639,7 +1655,7 @@ impl super::super::Renderer {
                 }
             }
             if let Some(alloc) = old_alloc {
-                self.allocator.free(alloc).ok();
+                self.resources.free(alloc);
             }
         } else if vertex_size > 0 && self.gui_buffers[slot_index].vertex_hash != vertex_hash {
             let alloc = self.gui_buffers[slot_index]
@@ -1682,7 +1698,7 @@ impl super::super::Renderer {
                 }
             }
             if let Some(alloc) = old_alloc {
-                self.allocator.free(alloc).ok();
+                self.resources.free(alloc);
             }
         } else if index_size > 0 && self.gui_buffers[slot_index].index_hash != index_hash {
             let alloc = self.gui_buffers[slot_index]
@@ -1732,8 +1748,8 @@ impl super::super::Renderer {
             return;
         }
 
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let (vertex_buffer, index_buffer) = self.upload_gui_buffers(
             frame,
             ds_offset,
@@ -1759,7 +1775,7 @@ impl super::super::Renderer {
                 cmd,
                 0,
                 &[vk::Rect2D {
-                    extent: self.swapchain_extent,
+                    extent: self.swapchain.swapchain_extent,
                     ..Default::default()
                 }],
             );
@@ -1889,8 +1905,8 @@ impl super::super::Renderer {
         yaw: f32,
         pitch: f32,
     ) {
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
 
         // Vanilla MC 1.8.9: underwater.png tiled 4x4, UV offset by yaw/pitch
         let uv_offset_x = -yaw / 64.0;
@@ -1937,7 +1953,8 @@ impl super::super::Renderer {
         .unwrap();
         let s_reqs = unsafe { self.device.get_buffer_memory_requirements(staging) };
         let s_alloc = self
-            .allocator
+            .resources
+            .allocator_mut()
             .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
                 name: "font_stg",
                 requirements: s_reqs,
@@ -2067,7 +2084,7 @@ impl super::super::Renderer {
         unsafe {
             self.device.destroy_buffer(staging, None);
         }
-        self.allocator.free(s_alloc).unwrap();
+        self.resources.allocator_mut().free(s_alloc).unwrap();
         self.font.atlas_dirty = false;
         self.gui_font_uploaded = true;
     }
@@ -2152,7 +2169,7 @@ impl super::super::Renderer {
         self.particle_generation = generation;
         self.particle_list.clear();
         self.particle_list.extend_from_slice(particles);
-        self.state.particle_count = particles.len();
+        self.state.frame_profile.set_particle_count(particles.len());
         // Old 2D sprite path — clear the sprite vec since we now render in 3D.
         self.particles.clear();
     }

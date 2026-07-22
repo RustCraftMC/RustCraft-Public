@@ -93,10 +93,10 @@ impl SpatialListener {
         let right_x = -self.yaw.sin();
         let right_z = self.yaw.cos();
         let pan = ((dx * right_x + dz * right_z) / horizontal).clamp(-1.0, 1.0);
-        // Equal-power panning retains perceived loudness as a source crosses
-        // the centre line, unlike the previous one-sided attenuation curve.
-        let left = ((1.0 - pan) * 0.5).sqrt() * std::f32::consts::SQRT_2;
-        let right = ((1.0 + pan) * 0.5).sqrt() * std::f32::consts::SQRT_2;
+        // Equal-power panning: left²+right² = 1, each channel stays in [0, 1].
+        // Do NOT multiply by √2 — that peaks at ~1.41 and hard-clips the DAC.
+        let left = ((1.0 - pan) * 0.5).sqrt();
+        let right = ((1.0 + pan) * 0.5).sqrt();
         (left, right)
     }
 
@@ -130,6 +130,19 @@ mod spatial_tests {
         let listener = SpatialListener::new(); // yaw 0 faces +X, right is +Z
         let (left, right) = listener.pan_to([0.0, 0.0, 4.0]);
         assert!(right > left);
+        assert!(left <= 1.0 && right <= 1.0);
+    }
+
+    #[test]
+    fn equal_power_pan_never_exceeds_unity_gain() {
+        let listener = SpatialListener::new();
+        for z in [-8.0_f32, -1.0, 0.0, 1.0, 8.0] {
+            let (left, right) = listener.pan_to([0.0, 0.0, z]);
+            assert!(left >= 0.0 && left <= 1.0 + 1e-5, "left={left}");
+            assert!(right >= 0.0 && right <= 1.0 + 1e-5, "right={right}");
+            let energy = left * left + right * right;
+            assert!((energy - 1.0).abs() < 1e-4 || (left == 1.0 && right == 1.0), "energy={energy}");
+        }
     }
 }
 
@@ -346,6 +359,10 @@ impl RodioAudioBackend {
         let idx = self.next_sink;
         self.next_sink = (self.next_sink + 1) % SINK_POOL_SIZE;
         self.sinks[idx].stop();
+        // Drop spatial trackers still pointing at this recycled sink so tick()
+        // cannot keep rewriting volume on a different sound that just started.
+        self.active_sounds.retain(|s| s.sink_index != idx);
+        self.sinks[idx].set_volume(1.0);
         idx
     }
 
@@ -365,7 +382,7 @@ impl RodioAudioBackend {
         let idx = (self.played_count as usize) % pool.len();
         let (resource_path, _is_streaming) = pool[idx].clone();
 
-        let vol = self.spatial_volume(sound_pos, event.category, event.volume);
+        let vol = self.spatial_volume(sound_pos, event.category, event.volume).clamp(0.0, 1.0);
         if vol < 0.001 {
             return;
         }
@@ -382,15 +399,15 @@ impl RodioAudioBackend {
 
         let sink_idx = self.alloc_sink();
 
-        // ChannelVolume mixes any channel count to mono, then plays to each
-        // output channel at the given volume — perfect for spatial panning.
+        // Pan only in ChannelVolume (gains ≤ 1). Distance/category volume lives
+        // on the Sink so tick() can update attenuation without double-applying.
         let panned = ChannelVolume::new(
             decoder.speed(event.pitch.clamp(0.01, 4.0)),
-            vec![vol * left_vol, vol * right_vol],
+            vec![left_vol, right_vol],
         );
+        self.sinks[sink_idx].set_volume(vol);
         self.sinks[sink_idx].append(panned);
 
-        // Track for per-tick volume updates
         if self.active_sounds.len() < MAX_ACTIVE_SPATIAL {
             self.active_sounds.push(ActiveSound {
                 sink_index: sink_idx,
@@ -434,7 +451,7 @@ impl AudioBackend for RodioAudioBackend {
             let idx = (self.played_count as usize) % pool.len();
             let (resource_path, is_streaming) = pool[idx].clone();
 
-            let vol = self.effective_volume(event.category) * event.volume;
+            let vol = (self.effective_volume(event.category) * event.volume).clamp(0.0, 1.0);
             if vol < 0.001 {
                 return;
             }
@@ -454,8 +471,8 @@ impl AudioBackend for RodioAudioBackend {
                 self.music_sink.set_volume(vol);
             } else {
                 let sink_idx = self.alloc_sink();
-                self.sinks[sink_idx].append(decoder.speed(event.pitch.clamp(0.01, 4.0)));
                 self.sinks[sink_idx].set_volume(vol);
+                self.sinks[sink_idx].append(decoder.speed(event.pitch.clamp(0.01, 4.0)));
             }
         }
     }
@@ -481,7 +498,10 @@ impl AudioBackend for RodioAudioBackend {
             if self.sinks[s.sink_index].empty() {
                 to_remove.push(i);
             } else {
-                let vol = self.spatial_volume(s.position, s.category, s.base_volume);
+                // Only Sink volume is updated here; pan gains stay on ChannelVolume.
+                let vol = self
+                    .spatial_volume(s.position, s.category, s.base_volume)
+                    .clamp(0.0, 1.0);
                 self.sinks[s.sink_index].set_volume(vol);
             }
         }

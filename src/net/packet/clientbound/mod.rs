@@ -1,5 +1,8 @@
+pub mod handler;
 pub mod login;
 pub mod play;
+
+pub use handler::{HandleResult, PacketHandlerFn, PacketHandlerRegistry, PacketId, RegisteredHandler};
 
 use super::{
     ChunkBulkData, ChunkMeta, CombatEvent, EntityProperty, EntityPropertyModifier, MapIcon,

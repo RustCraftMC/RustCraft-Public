@@ -138,9 +138,9 @@ pub(crate) fn creative_scrollbar_geometry(
 
 impl Renderer {
     pub(crate) fn creative_visible_entries(&self) -> Vec<CreativeItemEntry> {
-        let mut items = creative_tab_entries(self.state.creative_tab);
-        if self.state.creative_tab == CREATIVE_TAB_SEARCH {
-            let query = self.state.creative_search.trim().to_lowercase();
+        let mut items = creative_tab_entries(self.state.inventory.creative_tab());
+        if self.state.inventory.creative_tab() == CREATIVE_TAB_SEARCH {
+            let query = self.state.inventory.creative_search().trim().to_lowercase();
             if !query.is_empty() {
                 items.retain(|item| {
                     self.item_display_name(item.item_id, item.damage)
@@ -164,15 +164,15 @@ impl Renderer {
         item_gui: &mut GuiVertexBuilder,
         creative_gui: &mut GuiVertexBuilder,
     ) {
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
         let font_sz = metrics.font_sz;
 
         // Vanilla GuiContainer draws drawDefaultBackground() behind the panel.
         overlay_gui.fill_world_background(sw, sh);
 
-        if self.state.inventory_window_id != 0 {
+        if self.state.inventory.inventory_window_id() != 0 {
             self.draw_container_window_overlay(
                 metrics,
                 widget_gui,
@@ -185,7 +185,7 @@ impl Renderer {
         }
 
         // Creative mode inventory
-        if self.state.gamemode == 1 {
+        if self.state.hud.gamemode() == 1 {
             self.draw_creative_inventory(
                 metrics,
                 widget_gui,
@@ -220,22 +220,25 @@ impl Renderer {
         let grid_x = panel_x + 8.0 * gs;
         let grid_y = panel_y + 84.0 * gs;
 
+        // Draw the player preview into the inventory panel batch so item icons
+        // (armor/crafting) render on top. font_gui is drawn last and would cover
+        // the left armor column if the preview went there.
         let portrait_x = panel_x + 51.0 * gs;
         let portrait_bottom = panel_y + 75.0 * gs;
         let portrait_px = 30.0 / 16.0 * gs;
         let (portrait_yaw, portrait_pitch) =
             vanilla_preview_rotation(portrait_x, portrait_bottom, metrics.mouse_pos, gs);
         player_model::draw_player_preview(
-            font_gui,
+            inventory_gui,
             &mut self.player_preview_cache,
-            &self.state.local_skin,
+            &self.state.settings.local_skin(),
             portrait_x,
             portrait_bottom - 32.0 * portrait_px,
             portrait_px,
             portrait_yaw,
             portrait_pitch,
-            self.state.local_skin_slim,
-            self.state.skin_parts,
+            self.state.settings.local_skin_slim(),
+            self.state.settings.skin_parts(),
             1.0,
         );
 
@@ -250,7 +253,7 @@ impl Renderer {
                 sx,
                 sy,
                 slot_size,
-                self.state.inventory_armor_slots[i].clone(),
+                self.state.inventory.inventory_armor_slots()[i].clone(),
                 font_sz,
                 gs,
                 Some(5 + i as i16),
@@ -258,13 +261,15 @@ impl Renderer {
             );
         }
 
-        let craft_x = panel_x + 98.0 * gs;
-        let craft_y = panel_y + 18.0 * gs;
+        // Vanilla ContainerPlayer: matrix (88 + col*18, 26 + row*18),
+        // crafting result SlotCrafting at (144, 36).
+        let craft_x = panel_x + 88.0 * gs;
+        let craft_y = panel_y + 26.0 * gs;
         font_gui.draw_text(
             &mut self.font,
             panel_x + 86.0 * gs,
             panel_y + 16.0 * gs,
-            self.state.ui_text.get("container.crafting"),
+            self.state.settings.ui_text().get("container.crafting"),
             font_sz * 0.64,
             [0.25, 0.25, 0.25, 1.0],
         );
@@ -281,7 +286,7 @@ impl Renderer {
                     sx,
                     sy,
                     slot_size,
-                    self.state.inventory_crafting_slots[craft_idx].clone(),
+                    self.state.inventory.inventory_crafting_slots()[craft_idx].clone(),
                     font_sz,
                     gs,
                     Some(craft_idx as i16),
@@ -289,8 +294,8 @@ impl Renderer {
                 );
             }
         }
-        let result_x = panel_x + 154.0 * gs;
-        let result_y = panel_y + 28.0 * gs;
+        let result_x = panel_x + 144.0 * gs;
+        let result_y = panel_y + 36.0 * gs;
         self.draw_inventory_slot(
             widget_gui,
             font_gui,
@@ -299,7 +304,7 @@ impl Renderer {
             result_x,
             result_y,
             slot_size,
-            self.state.inventory_crafting_slots[0].clone(),
+            self.state.inventory.inventory_crafting_slots()[0].clone(),
             font_sz,
             gs,
             Some(0),
@@ -319,7 +324,7 @@ impl Renderer {
                     sx,
                     sy,
                     slot_size,
-                    self.state.inventory_slots[idx].clone(),
+                    self.state.inventory.inventory_slots()[idx].clone(),
                     font_sz,
                     gs,
                     Some(idx as i16),
@@ -339,7 +344,7 @@ impl Renderer {
                 sx,
                 hotbar_y,
                 slot_size,
-                self.state.inventory_slots[col].clone(),
+                self.state.inventory.inventory_slots()[col].clone(),
                 font_sz,
                 gs,
                 Some(36 + col as i16),
@@ -347,23 +352,20 @@ impl Renderer {
             );
         }
 
-        if self
-            .state
-            .inventory_slots
-            .iter()
+        if self.state.inventory.inventory_slots().iter()
             .all(|slot| slot.count == 0)
         {
             font_gui.draw_text_centered(
                 &mut self.font,
                 sw / 2.0,
                 hotbar_y + slot_size + 10.0 * gs,
-                self.state.ui_text.get("rustcraft.inventory.empty"),
+                self.state.settings.ui_text().get("rustcraft.inventory.empty"),
                 font_sz * 0.72,
                 [0.7, 0.7, 0.7, 1.0],
             );
         }
 
-        let tooltip = std::mem::take(&mut self.state.hovered_tooltip);
+        let tooltip = std::mem::take(self.state.hud.hovered_tooltip_mut());
         self.draw_cursor_stack(
             font_gui,
             block_gui,
@@ -373,7 +375,7 @@ impl Renderer {
             font_sz,
             gs,
         );
-        if self.state.inventory_cursor_slot.is_empty() {
+        if self.state.inventory.inventory_cursor_slot().is_empty() {
             self.draw_item_tooltip(font_gui, metrics.mouse_pos, &tooltip, font_sz, gs);
         }
     }
@@ -387,8 +389,8 @@ impl Renderer {
         item_gui: &mut GuiVertexBuilder,
         creative_gui: &mut GuiVertexBuilder,
     ) {
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
         let font_sz = metrics.font_sz;
         let slot_size = 16.0 * gs;
@@ -402,7 +404,7 @@ impl Renderer {
 
         // Vanilla creative inventory is 195x136 for every tab, including the inventory tab.
         let inv_w = CREATIVE_PANEL_WIDTH * gs;
-        let is_inventory_tab = self.state.creative_tab == CREATIVE_TAB_INVENTORY;
+        let is_inventory_tab = self.state.inventory.creative_tab() == CREATIVE_TAB_INVENTORY;
         let inv_h = CREATIVE_PANEL_HEIGHT * gs;
         let panel_x = (sw - inv_w) * 0.5;
         let panel_y = (sh - inv_h) * 0.5;
@@ -411,7 +413,7 @@ impl Renderer {
         // Most tabs (0-10 except search): tab_items.png (cell 1: uv 0.5, 0)
         // Tab 5 (search): tab_item_search.png (cell 3: uv 0.5, 0.5)
         // Tab 11 (inventory): tab_inventory.png (cell 2: uv 0.0, 0.5)
-        let (panel_u, panel_v, panel_tex_h) = match self.state.creative_tab {
+        let (panel_u, panel_v, panel_tex_h) = match self.state.inventory.creative_tab() {
             CREATIVE_TAB_SEARCH => (0.5, 0.5, 136.0),
             CREATIVE_TAB_INVENTORY => (0.0, 0.5, 136.0),
             _ => (0.5, 0.0, 136.0),
@@ -437,24 +439,24 @@ impl Renderer {
             player_model::draw_player_preview(
                 font_gui,
                 &mut self.player_preview_cache,
-                &self.state.local_skin,
+                &self.state.settings.local_skin(),
                 portrait_x,
                 portrait_bottom - 32.0 * portrait_px,
                 portrait_px,
                 portrait_yaw,
                 portrait_pitch,
-                self.state.local_skin_slim,
-                self.state.skin_parts,
+                self.state.settings.local_skin_slim(),
+                self.state.settings.skin_parts(),
                 1.0,
             );
         }
 
-        if self.state.creative_tab == CREATIVE_TAB_SEARCH {
+        if self.state.inventory.creative_tab() == CREATIVE_TAB_SEARCH {
             font_gui.draw_text(
                 &mut self.font,
                 panel_x + 82.0 * gs,
                 panel_y + 6.0 * gs,
-                &self.state.creative_search,
+                &self.state.inventory.creative_search(),
                 font_sz * 0.64,
                 [1.0, 1.0, 1.0, 1.0],
             );
@@ -485,7 +487,7 @@ impl Renderer {
         for i in 0..12 {
             let col = i % 6;
             let is_top = i < 6;
-            let is_selected = i == self.state.creative_tab;
+            let is_selected = i == self.state.inventory.creative_tab();
 
             // Screen position (MC 1.8.9 layout)
             let tab_x = if col == 5 {
@@ -557,7 +559,7 @@ impl Renderer {
         };
         let max_scroll_rows = creative_max_scroll_rows(items.len());
         let scroll_start =
-            (self.state.creative_scroll * max_scroll_rows as f32).round() as usize * cols;
+            (self.state.inventory.creative_scroll() * max_scroll_rows as f32).round() as usize * cols;
         let visible_count = total_slots.min(items.len().saturating_sub(scroll_start));
 
         // Draw slot backgrounds and items (skip for inventory tab — it draws its own layout)
@@ -595,9 +597,9 @@ impl Renderer {
                         && metrics.mouse_pos[1] <= sy + slot_size;
                     if hovered {
                         font_gui.fill_rect(sx, sy, slot_size, slot_size, [1.0, 1.0, 1.0, 0.34]);
-                        if self.state.hovered_tooltip.is_empty() {
+                        if self.state.hud.hovered_tooltip().is_empty() {
                             let stack = self.creative_stack_for_slot(i);
-                            self.state.hovered_tooltip = self.tooltip_lines_for_stack(&stack);
+                            self.state.hud.set_hovered_tooltip(self.tooltip_lines_for_stack(&stack));
                         }
                     }
                     let item = items[scroll_start + i];
@@ -618,7 +620,7 @@ impl Renderer {
             let can_scroll = max_scroll_rows > 0;
             creative_gui.add_quad(
                 scrollbar.x,
-                scrollbar.thumb_y(self.state.creative_scroll),
+                scrollbar.thumb_y(self.state.inventory.creative_scroll()),
                 12.0 * gs,
                 scrollbar.thumb_height,
                 if can_scroll {
@@ -651,7 +653,7 @@ impl Renderer {
                     sx,
                     sy,
                     slot_size,
-                    self.state.inventory_armor_slots[(j - 5) as usize].clone(),
+                    self.state.inventory.inventory_armor_slots()[(j - 5) as usize].clone(),
                     font_sz,
                     gs,
                     Some(j as i16),
@@ -673,7 +675,7 @@ impl Renderer {
                         sx,
                         sy,
                         slot_size,
-                        self.state.inventory_slots[idx].clone(),
+                        self.state.inventory.inventory_slots()[idx].clone(),
                         font_sz,
                         gs,
                         Some(idx as i16),
@@ -693,7 +695,7 @@ impl Renderer {
                     sx,
                     hotbar_y,
                     slot_size,
-                    self.state.inventory_slots[i].clone(),
+                    self.state.inventory.inventory_slots()[i].clone(),
                     font_sz,
                     gs,
                     Some((36 + i) as i16),
@@ -722,11 +724,11 @@ impl Renderer {
                     slot_size,
                     [1.0, 1.0, 1.0, 0.34],
                 );
-                if self.state.hovered_tooltip.is_empty() {
-                    self.state.hovered_tooltip = vec![super::tooltip::TooltipLine {
+                if self.state.hud.hovered_tooltip().is_empty() {
+                    self.state.hud.set_hovered_tooltip(vec![super::tooltip::TooltipLine {
                         text: self.t_dynamic("inventory.binSlot"),
                         color: [1.0, 1.0, 1.0, 1.0],
-                    }];
+                    }]);
                 }
             }
         } else {
@@ -734,7 +736,7 @@ impl Renderer {
             let hotbar_y = panel_y + 112.0 * gs;
             for i in 0..9 {
                 let sx = grid_x + i as f32 * slot_step;
-                let slot = self.state.inventory_slots[i].clone();
+                let slot = self.state.inventory.inventory_slots()[i].clone();
                 self.draw_inventory_slot(
                     widget_gui,
                     font_gui,
@@ -764,8 +766,8 @@ impl Renderer {
         );
 
         // Tooltip for hovered slot
-        let tooltip = std::mem::take(&mut self.state.hovered_tooltip);
-        if self.state.inventory_cursor_slot.is_empty() && !tooltip.is_empty() {
+        let tooltip = std::mem::take(self.state.hud.hovered_tooltip_mut());
+        if self.state.inventory.inventory_cursor_slot().is_empty() && !tooltip.is_empty() {
             self.draw_item_tooltip(font_gui, metrics.mouse_pos, &tooltip, font_sz, gs);
         }
     }
@@ -779,15 +781,15 @@ impl Renderer {
         block_gui: &mut GuiVertexBuilder,
         item_gui: &mut GuiVertexBuilder,
     ) {
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
         let font_sz = metrics.font_sz;
         let slot_size = 16.0 * gs;
         let slot_gap = 2.0 * gs;
         let layout = ContainerLayout::for_window(
-            &self.state.inventory_window_type,
-            self.state.inventory_window_slot_count,
+            &self.state.inventory.inventory_window_type(),
+            self.state.inventory.inventory_window_slot_count(),
         );
         let use_generic54 = layout.kind == ContainerKind::Generic;
         let generic_rows = layout.rows.clamp(1, 6);
@@ -876,7 +878,7 @@ impl Renderer {
             &mut self.font,
             player_grid_x,
             panel_y + 6.0 * gs,
-            &self.state.inventory_window_title.clone(),
+            &self.state.inventory.inventory_window_title().clone(),
             font_sz * 0.64,
             [0.25, 0.25, 0.25, 1.0],
         );
@@ -901,17 +903,14 @@ impl Renderer {
 
         for slot in 0..layout
             .slot_count
-            .min(self.state.inventory_window_slot_count)
+            .min(self.state.inventory.inventory_window_slot_count())
         {
             let Some((sx, sy)) =
                 layout.slot_pos(slot, container_x, container_y, slot_size, slot_gap, gs)
             else {
                 continue;
             };
-            let item = self
-                .state
-                .inventory_window_slots
-                .get(slot)
+            let item = self.state.inventory.inventory_window_slots().get(slot)
                 .cloned()
                 .unwrap_or_default();
             self.draw_inventory_slot(
@@ -934,7 +933,7 @@ impl Renderer {
             &mut self.font,
             player_grid_x,
             main_y - 12.0 * gs,
-            self.state.ui_text.get("container.inventory"),
+            self.state.settings.ui_text().get("container.inventory"),
             font_sz * 0.64,
             [0.25, 0.25, 0.25, 1.0],
         );
@@ -942,7 +941,7 @@ impl Renderer {
             for col in 0..9 {
                 let local_idx = 9 + row * 9 + col;
                 let protocol_slot =
-                    self.state.inventory_window_slot_count as i16 + row as i16 * 9 + col as i16;
+                    self.state.inventory.inventory_window_slot_count() as i16 + row as i16 * 9 + col as i16;
                 let sx = player_grid_x + col as f32 * (slot_size + slot_gap);
                 let sy = main_y + row as f32 * (slot_size + slot_gap);
                 self.draw_inventory_slot(
@@ -953,7 +952,7 @@ impl Renderer {
                     sx,
                     sy,
                     slot_size,
-                    self.state.inventory_slots[local_idx].clone(),
+                    self.state.inventory.inventory_slots()[local_idx].clone(),
                     font_sz,
                     gs,
                     Some(protocol_slot),
@@ -965,7 +964,7 @@ impl Renderer {
         let hotbar_y = main_y + 58.0 * gs;
         for col in 0..9 {
             let sx = player_grid_x + col as f32 * (slot_size + slot_gap);
-            let protocol_slot = self.state.inventory_window_slot_count as i16 + 27 + col as i16;
+            let protocol_slot = self.state.inventory.inventory_window_slot_count() as i16 + 27 + col as i16;
 
             self.draw_inventory_slot(
                 widget_gui,
@@ -975,7 +974,7 @@ impl Renderer {
                 sx,
                 hotbar_y,
                 slot_size,
-                self.state.inventory_slots[col].clone(),
+                self.state.inventory.inventory_slots()[col].clone(),
                 font_sz,
                 gs,
                 Some(protocol_slot),
@@ -983,7 +982,7 @@ impl Renderer {
             );
         }
 
-        let tooltip = std::mem::take(&mut self.state.hovered_tooltip);
+        let tooltip = std::mem::take(self.state.hud.hovered_tooltip_mut());
         self.draw_cursor_stack(
             font_gui,
             block_gui,
@@ -993,7 +992,7 @@ impl Renderer {
             font_sz,
             gs,
         );
-        if self.state.inventory_cursor_slot.is_empty() {
+        if self.state.inventory.inventory_cursor_slot().is_empty() {
             self.draw_item_tooltip(font_gui, metrics.mouse_pos, &tooltip, font_sz, gs);
         }
     }
@@ -1005,13 +1004,13 @@ impl Renderer {
         y: f32,
         gs: f32,
     ) {
-        let burn = window_property(&self.state.inventory_window_properties, 0).max(0) as f32;
-        let mut burn_total = window_property(&self.state.inventory_window_properties, 1) as f32;
+        let burn = window_property(&self.state.inventory.inventory_window_properties(), 0).max(0) as f32;
+        let mut burn_total = window_property(&self.state.inventory.inventory_window_properties(), 1) as f32;
         if burn_total <= 0.0 {
             burn_total = 200.0;
         }
-        let cook = window_property(&self.state.inventory_window_properties, 2).max(0) as f32;
-        let cook_total = window_property(&self.state.inventory_window_properties, 3).max(1) as f32;
+        let cook = window_property(&self.state.inventory.inventory_window_properties(), 2).max(0) as f32;
+        let cook_total = window_property(&self.state.inventory.inventory_window_properties(), 3).max(1) as f32;
         let burn_h = (13.0 * (burn / burn_total).clamp(0.0, 1.0)) as i32;
         if burn_h > 0 {
             draw_atlas_sprite(
@@ -1051,7 +1050,7 @@ impl Renderer {
         y: f32,
         gs: f32,
     ) {
-        let brew = window_property(&self.state.inventory_window_properties, 0).max(0) as f32;
+        let brew = window_property(&self.state.inventory.inventory_window_properties(), 0).max(0) as f32;
         if brew <= 0.0 {
             return;
         }
@@ -1106,7 +1105,7 @@ impl Renderer {
         gs: f32,
     ) {
         for row in 0..3 {
-            let level = window_property(&self.state.inventory_window_properties, row as i16).max(0);
+            let level = window_property(&self.state.inventory.inventory_window_properties(), row as i16).max(0);
             draw_atlas_sprite(
                 generic54_gui,
                 grid_x + 60.0 * gs,
@@ -1132,7 +1131,7 @@ impl Renderer {
                 y + (21.0 + row as f32 * 19.0) * gs,
                 &if level > 0 {
                     format_text(
-                        self.state.ui_text.get("rustcraft.enchant.level"),
+                        self.state.settings.ui_text().get("rustcraft.enchant.level"),
                         &[&level.to_string()],
                     )
                 } else {
@@ -1153,20 +1152,11 @@ impl Renderer {
         font_sz: f32,
         gs: f32,
     ) {
-        let has_input = self
-            .state
-            .inventory_window_slots
-            .first()
+        let has_input = self.state.inventory.inventory_window_slots().first()
             .is_some_and(|slot| !slot.is_empty());
-        let has_second = self
-            .state
-            .inventory_window_slots
-            .get(1)
+        let has_second = self.state.inventory.inventory_window_slots().get(1)
             .is_some_and(|slot| !slot.is_empty());
-        let has_output = self
-            .state
-            .inventory_window_slots
-            .get(2)
+        let has_output = self.state.inventory.inventory_window_slots().get(2)
             .is_some_and(|slot| !slot.is_empty());
         draw_atlas_sprite(
             generic54_gui,
@@ -1194,11 +1184,11 @@ impl Renderer {
                 21.0,
             );
         }
-        let cost = window_property(&self.state.inventory_window_properties, 0);
+        let cost = window_property(&self.state.inventory.inventory_window_properties(), 0);
         if cost > 0 && has_output {
             let cost_string = cost.to_string();
             let cost_label = format_text(
-                &self.state.ui_text.dynamic("container.repair.cost"),
+                &self.state.settings.ui_text().dynamic("container.repair.cost"),
                 &[&cost_string],
             );
             font_gui.draw_text(
@@ -1253,17 +1243,24 @@ impl Renderer {
         protocol_slot: Option<i16>,
         mouse_pos: [f32; 2],
     ) {
-        let hovered = mouse_pos[0] >= sx
-            && mouse_pos[0] <= sx + slot_size
-            && mouse_pos[1] >= sy
-            && mouse_pos[1] <= sy + slot_size;
+        // Vanilla GuiContainer uses a 18x18 hit pad around the 16x16 item
+        // (`x >= slotX - 1 && x < slotX + 17`). Using only 16x16 leaves 2px
+        // gaps between slots that resolve as click-outside and drop the cursor.
+        let hit_pad = slot_size / 16.0;
+        let hit_x = sx - hit_pad;
+        let hit_y = sy - hit_pad;
+        let hit_size = slot_size + 2.0 * hit_pad;
+        let hovered = mouse_pos[0] >= hit_x
+            && mouse_pos[0] < hit_x + hit_size
+            && mouse_pos[1] >= hit_y
+            && mouse_pos[1] < hit_y + hit_size;
         if let Some(slot_index) = protocol_slot {
             widget_gui.register_button(
                 crate::ui::button_ids::INVENTORY_SLOT_BASE + slot_index as u32,
-                sx,
-                sy,
-                slot_size,
-                slot_size,
+                hit_x,
+                hit_y,
+                hit_size,
+                hit_size,
             );
         }
         let count = slot.count;
@@ -1271,9 +1268,9 @@ impl Renderer {
             return;
         }
         // Track hovered slot for tooltip (avoids one-frame delay from gui_hit_test)
-        if hovered && self.state.hovered_tooltip.is_empty() {
+        if hovered && self.state.hud.hovered_tooltip().is_empty() {
             let stack = self.inventory_stack_for_protocol_slot(protocol_slot.unwrap_or(0));
-            self.state.hovered_tooltip = self.tooltip_lines_for_stack(&stack);
+            self.state.hud.set_hovered_tooltip(self.tooltip_lines_for_stack(&stack));
         }
         self.draw_item_icon(block_gui, item_gui, font_gui, sx, sy, slot_size, &slot, gs);
         draw_durability_bar(font_gui, sx, sy, slot_size, slot.item_id, slot.damage);
@@ -1403,7 +1400,7 @@ impl Renderer {
                 );
             }
             if glint {
-                let tint = crate::client::inventory::glint_tint(self.state.time);
+                let tint = crate::client::inventory::glint_tint(self.state.frame_profile.time());
                 let rect = crate::render::item_icons::item_icon_uv_rect(
                     crate::render::item_icons::item_icon_entry_index(layers[0].path).unwrap_or(0),
                 );
@@ -1456,7 +1453,7 @@ impl Renderer {
         font_sz: f32,
         gs: f32,
     ) {
-        let slot = self.state.inventory_cursor_slot.clone();
+        let slot = self.state.inventory.inventory_cursor_slot().clone();
         if slot.count == 0 {
             return;
         }
@@ -1496,15 +1493,15 @@ impl Renderer {
     }
 
     fn creative_stack_for_slot(&self, slot: usize) -> ItemStackView {
-        if self.state.creative_tab == CREATIVE_TAB_INVENTORY {
+        if self.state.inventory.creative_tab() == CREATIVE_TAB_INVENTORY {
             return ItemStackView::default();
         }
-        let items = creative_tab_entries(self.state.creative_tab);
+        let items = creative_tab_entries(self.state.inventory.creative_tab());
         let cols = 9usize;
         let rows = 5usize;
         let max_scroll_rows = (items.len() / cols).saturating_sub(rows);
         let scroll_start =
-            (self.state.creative_scroll * max_scroll_rows as f32).round() as usize * cols;
+            (self.state.inventory.creative_scroll() * max_scroll_rows as f32).round() as usize * cols;
         let Some(item) = items.get(scroll_start + slot).copied() else {
             return ItemStackView::default();
         };
@@ -1517,34 +1514,31 @@ impl Renderer {
     }
 
     fn inventory_stack_for_protocol_slot(&self, protocol_slot: i16) -> ItemStackView {
-        if self.state.inventory_window_id != 0
+        if self.state.inventory.inventory_window_id() != 0
             && protocol_slot >= 0
-            && (protocol_slot as usize) < self.state.inventory_window_slot_count
+            && (protocol_slot as usize) < self.state.inventory.inventory_window_slot_count()
         {
-            return self
-                .state
-                .inventory_window_slots
-                .get(protocol_slot as usize)
+            return self.state.inventory.inventory_window_slots().get(protocol_slot as usize)
                 .cloned()
                 .unwrap_or_default();
         }
 
-        if self.state.inventory_window_id != 0
-            && protocol_slot >= self.state.inventory_window_slot_count as i16
+        if self.state.inventory.inventory_window_id() != 0
+            && protocol_slot >= self.state.inventory.inventory_window_slot_count() as i16
         {
-            let player_slot = protocol_slot - self.state.inventory_window_slot_count as i16;
+            let player_slot = protocol_slot - self.state.inventory.inventory_window_slot_count() as i16;
             return match player_slot {
-                0..=26 => self.state.inventory_slots[(player_slot + 9) as usize].clone(),
-                27..=35 => self.state.inventory_slots[(player_slot - 27) as usize].clone(),
+                0..=26 => self.state.inventory.inventory_slots()[(player_slot + 9) as usize].clone(),
+                27..=35 => self.state.inventory.inventory_slots()[(player_slot - 27) as usize].clone(),
                 _ => ItemStackView::default(),
             };
         }
 
         match protocol_slot {
-            0..=4 => self.state.inventory_crafting_slots[protocol_slot as usize].clone(),
-            5..=8 => self.state.inventory_armor_slots[(protocol_slot - 5) as usize].clone(),
-            9..=35 => self.state.inventory_slots[protocol_slot as usize].clone(),
-            36..=44 => self.state.inventory_slots[(protocol_slot - 36) as usize].clone(),
+            0..=4 => self.state.inventory.inventory_crafting_slots()[protocol_slot as usize].clone(),
+            5..=8 => self.state.inventory.inventory_armor_slots()[(protocol_slot - 5) as usize].clone(),
+            9..=35 => self.state.inventory.inventory_slots()[protocol_slot as usize].clone(),
+            36..=44 => self.state.inventory.inventory_slots()[(protocol_slot - 36) as usize].clone(),
             _ => ItemStackView::default(),
         }
     }
@@ -2086,17 +2080,17 @@ pub fn draw_potion_effects_inventory(
     inventory_gui: &mut GuiVertexBuilder,
     font_gui: &mut GuiVertexBuilder,
 ) {
-    let effects = &renderer.state.active_potion_effects;
+    let effects = &renderer.state.hud.active_potion_effects();
     if effects.is_empty() {
         return;
     }
     let gs = metrics.gs;
     let font_sz = metrics.font_sz;
-    let sw = renderer.swapchain_extent.width as f32;
+    let sw = renderer.swapchain.swapchain_extent.width as f32;
     let inv_w = 176.0 * gs;
     let panel_x = (sw - inv_w) * 0.5;
     let panel_right = panel_x + inv_w;
-    let start_y = (renderer.swapchain_extent.height as f32 - 166.0 * gs) * 0.5;
+    let start_y = (renderer.swapchain.swapchain_extent.height as f32 - 166.0 * gs) * 0.5;
 
     let effect_w = 140.0 * gs;
     let effect_h = 32.0 * gs;
@@ -2140,7 +2134,7 @@ pub fn draw_potion_effects_inventory(
         }
 
         let name_key = crate::entity::potion_effect_name(effect.effect_id);
-        let name = renderer.state.ui_text.dynamic(name_key);
+        let name = renderer.state.settings.ui_text().dynamic(name_key);
         let amp_str = crate::entity::potion_amplifier_string(effect.amplifier);
         let display = if amp_str.is_empty() {
             name

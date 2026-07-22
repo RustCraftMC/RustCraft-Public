@@ -1,7 +1,8 @@
 use super::scroll_list::GuiScrollList;
-use super::{draw_button, draw_button_enabled, draw_title};
+use super::{draw_button, draw_button_enabled};
 use crate::render::gui::widgets::MenuMetrics;
 use crate::render::gui::GuiVertexBuilder;
+use crate::render::state::AccountState;
 use crate::render::Renderer;
 use crate::ui::button_ids as btn;
 
@@ -13,27 +14,19 @@ impl Renderer {
         font: &mut GuiVertexBuilder,
     ) {
         let gs = metrics.gs;
-        let text = self.state.ui_text.clone();
-        draw_title(
-            self,
-            font,
-            metrics.sw / 2.0,
-            18.0 * gs,
-            text.get("rustcraft.altmanager.title"),
-            14.0 * gs,
-            gs,
-        );
+        self.draw_standard_screen(metrics, font, "rustcraft.altmanager.title", 18.0 * gs, 14.0 * gs);
+        let text = self.state.settings.ui_text();
         let list = GuiScrollList::new(
             0.0,
             38.0 * gs,
             metrics.sw,
             (metrics.sh - 92.0 * gs).max(40.0 * gs),
             34.0 * gs,
-            self.state.account_list.len(),
-            self.state.selected_account.saturating_sub(4),
+            self.state.account.account_list().len(),
+            self.state.account.selected_account().saturating_sub(4),
         );
         list.draw_background(font);
-        if self.state.account_list.is_empty() {
+        if self.state.account.account_list().is_empty() {
             font.draw_text_centered(
                 &mut self.font,
                 metrics.sw / 2.0,
@@ -46,9 +39,9 @@ impl Renderer {
         let width = (300.0 * gs).min(metrics.sw - 24.0 * gs);
         let x = (metrics.sw - width) / 2.0;
         for index in list.visible_range() {
-            let (name, uuid, active) = self.state.account_list[index].clone();
+            let (name, uuid, active) = self.state.account.account_list_mut()[index].clone();
             let y = list.row_y(index);
-            if index == self.state.selected_account {
+            if index == self.state.account.selected_account() {
                 font.fill_rect(x, y, width, 32.0 * gs, [0.25, 0.25, 0.25, 0.95]);
             }
             widgets.register_button(
@@ -61,7 +54,7 @@ impl Renderer {
 
             // Load face from cache or download
             let key = uuid.replace('-', "");
-            let face = self.load_account_face(index, &key);
+            let face = Self::load_account_face(&mut self.state.account, index, &key);
             let face_size = 24.0 * gs;
             let face_x = x + 4.0 * gs;
             let face_y = y + (32.0 * gs - face_size) / 2.0;
@@ -110,10 +103,10 @@ impl Renderer {
         }
         list.draw_scrollbar(font, gs);
         let y = metrics.sh - 48.0 * gs;
-        let has = !self.state.account_list.is_empty()
-            && self.state.selected_account < self.state.account_list.len();
+        let has = !self.state.account.account_list().is_empty()
+            && self.state.account.selected_account() < self.state.account.account_list().len();
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widgets,
             font,
@@ -122,7 +115,7 @@ impl Renderer {
             text.get("rustcraft.altmanager.addAccount"),
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widgets,
             font,
@@ -131,7 +124,7 @@ impl Renderer {
             text.get("rustcraft.altmanager.addOffline"),
         );
         draw_button_enabled(
-            self,
+            &mut self.font,
             metrics,
             widgets,
             font,
@@ -141,7 +134,7 @@ impl Renderer {
             has,
         );
         draw_button_enabled(
-            self,
+            &mut self.font,
             metrics,
             widgets,
             font,
@@ -151,7 +144,7 @@ impl Renderer {
             has,
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widgets,
             font,
@@ -163,13 +156,13 @@ impl Renderer {
             &mut self.font,
             metrics.sw / 2.0,
             y - 13.0 * gs,
-            &self.state.account_status,
+            &self.state.account.account_status(),
             metrics.font_sz * 0.7,
             [0.7, 0.7, 0.7, 1.0],
         );
 
         // Offline username input overlay
-        if self.state.entering_offline_name {
+        if self.state.account.entering_offline_name() {
             let overlay_y = (metrics.sh - 50.0 * gs) / 2.0;
             font.fill_rect(0.0, 0.0, metrics.sw, metrics.sh, [0.0, 0.0, 0.0, 0.52]);
             font.fill_rect(
@@ -188,12 +181,12 @@ impl Renderer {
                 [0.9, 0.9, 0.9, 1.0],
             );
             let hint = text.get("rustcraft.altmanager.usernameHint").to_string();
-            let input_text: &str = if self.state.offline_username_input.is_empty() {
+            let input_text: &str = if self.state.account.offline_username_input().is_empty() {
                 &hint
             } else {
-                &self.state.offline_username_input
+                &self.state.account.offline_username_input()
             };
-            let color = if self.state.offline_username_input.is_empty() {
+            let color = if self.state.account.offline_username_input().is_empty() {
                 [0.4, 0.4, 0.4, 1.0]
             } else {
                 [1.0, 1.0, 1.0, 1.0]
@@ -217,18 +210,22 @@ impl Renderer {
         }
     }
 
-    fn load_account_face(&mut self, index: usize, key: &str) -> [[u8; 4]; 64] {
-        if let Some(&face) = self.state.account_faces.get(key) {
+    fn load_account_face(
+        account: &mut AccountState,
+        index: usize,
+        key: &str,
+    ) -> [[u8; 4]; 64] {
+        if let Some(&face) = account.account_faces().get(key) {
             return face;
         }
-        let (_, uuid, _) = &self.state.account_list[index];
+        let (_, uuid, _) = &account.account_list_mut()[index];
 
         // Get account data from auth cache
         let accounts = crate::auth::cache::load_accounts().unwrap_or_default();
-        let account = accounts
+        let found_account = accounts
             .iter()
             .find(|a| a.uuid.as_deref() == Some(uuid.as_str()));
-        let skin_info = account
+        let skin_info = found_account
             .and_then(|a| a.skins.as_ref())
             .and_then(|s| s.first());
         let texture_key = skin_info.and_then(|s| s.url.rsplit('/').next());
@@ -254,7 +251,7 @@ impl Renderer {
             .unwrap_or_else(crate::assets::skin::PlayerSkin::default_steve);
 
         let face = skin.face_pixels();
-        self.state.account_faces.insert(key.to_string(), face);
+        account.account_faces_mut().insert(key.to_string(), face);
         face
     }
 }

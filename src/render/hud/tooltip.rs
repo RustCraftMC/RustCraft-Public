@@ -96,7 +96,7 @@ impl Renderer {
             self.append_attribute_modifiers(compound, &mut lines);
         }
 
-        if self.state.advanced_tooltips {
+        if self.state.settings.advanced_tooltips() {
             lines.push(TooltipLine {
                 text: format!("#{:04} / {}", stack.item_id, stack.damage),
                 color: TOOLTIP_DARK_GRAY,
@@ -128,8 +128,8 @@ impl Renderer {
             return;
         }
 
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let text_size = font_sz * 0.62;
         let line_h = 10.0 * gs;
         let content_w = lines
@@ -220,7 +220,7 @@ impl Renderer {
             }
         }
 
-        self.state.ui_text.get("rustcraft.item.unknown").to_string()
+        self.state.settings.ui_text().get("rustcraft.item.unknown").to_string()
     }
 
     fn append_extra_stack_details(
@@ -258,7 +258,7 @@ impl Renderer {
             }
         }
 
-        if self.state.advanced_tooltips {
+        if self.state.settings.advanced_tooltips() {
             if let Some(max_damage) = max_damage_for_item(stack.item_id) {
                 let remaining = max_damage.saturating_sub(stack.damage as u32);
                 lines.push(TooltipLine {
@@ -478,7 +478,8 @@ impl Renderer {
             .filter(|value| !value.starts_with("enchantment."))
             .unwrap_or_else(|| {
                 self.state
-                    .ui_text
+                    .settings
+                    .ui_text()
                     .get("rustcraft.enchant.unknown")
                     .to_string()
             });
@@ -492,7 +493,7 @@ impl Renderer {
     }
 
     pub(super) fn t_dynamic(&self, key: &str) -> String {
-        self.state.ui_text.dynamic(key)
+        self.state.settings.ui_text().dynamic(key)
     }
 }
 

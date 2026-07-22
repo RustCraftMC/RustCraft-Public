@@ -77,9 +77,9 @@ impl Renderer {
     }
 
     fn draw_connecting_screen(&mut self, metrics: &MenuMetrics, font_gui: &mut GuiVertexBuilder) {
-        let text = self.state.ui_text.clone();
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let text = self.state.settings.ui_text();
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
 
         // "Connecting to the server..."
@@ -98,7 +98,7 @@ impl Renderer {
             &mut self.font,
             sw / 2.0,
             sh / 2.0 + 10.0 * gs,
-            &self.state.server_address,
+            &self.state.server_list.server_address(),
             metrics.font_sz * 0.75,
             [0.65, 0.65, 0.65, 1.0],
         );
@@ -126,9 +126,9 @@ impl Renderer {
         metrics: &MenuMetrics,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        let text = self.state.ui_text.clone();
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let text = self.state.settings.ui_text();
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
 
         // Vanilla GuiDownloadTerrain only shows this centered status message; it
@@ -151,9 +151,9 @@ impl Renderer {
         widget_gui: &mut GuiVertexBuilder,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        let text = self.state.ui_text.clone();
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let text = self.state.settings.ui_text();
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
 
         // Title
@@ -168,7 +168,7 @@ impl Renderer {
         );
 
         // Disconnect reason
-        let reason = &self.state.connection_status;
+        let reason = &self.state.account.connection_status();
         if !reason.is_empty() {
             font_gui.draw_text_centered(
                 &mut self.font,
@@ -183,7 +183,7 @@ impl Renderer {
         // "Back to Title Screen" button
         let y = sh / 2.0 + 10.0 * gs;
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -199,9 +199,9 @@ impl Renderer {
         widget_gui: &mut GuiVertexBuilder,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        let text = self.state.ui_text.clone();
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let text = self.state.settings.ui_text();
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
         // font_gui.fill_rect(0.0, 0.0, sw, sh, [0.0, 0.0, 0.0, 0.7]); // Removed to let panorama show
         font_gui.draw_text_shadowed(
@@ -219,7 +219,7 @@ impl Renderer {
         let y = sh / 4.0 + 8.0 * gs;
         let half = (metrics.btn_w - 4.0 * gs) / 2.0;
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -228,7 +228,7 @@ impl Renderer {
             text.get("menu.returnToGame"),
         );
         draw_button_enabled(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -238,7 +238,7 @@ impl Renderer {
             false,
         );
         draw_button_enabled(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -253,7 +253,7 @@ impl Renderer {
             false,
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -262,7 +262,7 @@ impl Renderer {
             text.get("menu.options"),
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -276,7 +276,7 @@ impl Renderer {
             "Modding",
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -293,19 +293,17 @@ impl Renderer {
         widget_gui: &mut GuiVertexBuilder,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        let text = self.state.ui_text.clone();
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
-        draw_title(
-            self,
+        self.draw_standard_screen(
+            metrics,
             font_gui,
-            sw / 2.0,
+            "options.title",
             sh / 4.0 - 30.0 * gs,
-            text.get("options.title"),
             24.0 * gs,
-            gs,
         );
+        let text = self.state.settings.ui_text();
 
         let left_x = sw / 2.0 - metrics.btn_w - 4.0 * gs;
         let right_x = sw / 2.0 + 4.0 * gs;
@@ -338,7 +336,7 @@ impl Renderer {
         for (row, (left, right)) in rows.iter().enumerate() {
             let y = row_y + row as f32 * (metrics.btn_h + metrics.btn_gap);
             draw_button(
-                self,
+                &mut self.font,
                 metrics,
                 widget_gui,
                 font_gui,
@@ -348,7 +346,7 @@ impl Renderer {
             );
             if right.0 != 0 {
                 draw_button(
-                    self,
+                    &mut self.font,
                     metrics,
                     widget_gui,
                     font_gui,
@@ -362,12 +360,12 @@ impl Renderer {
             let label = format!(
                 "{}: {}",
                 text.get("options.difficulty"),
-                difficulty_label(&text, self.state.difficulty)
+                difficulty_label(&text, self.state.settings.difficulty())
             );
             // Multiplayer difficulty is supplied by the server. Vanilla displays it
             // in GuiOptions but disables the control outside singleplayer.
             draw_button_enabled(
-                self,
+                &mut self.font,
                 metrics,
                 widget_gui,
                 font_gui,
@@ -383,7 +381,7 @@ impl Renderer {
             );
         }
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -404,19 +402,11 @@ impl Renderer {
         widget_gui: &mut GuiVertexBuilder,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        let text = self.state.ui_text.clone();
-        let sw = self.swapchain_extent.width as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
         let gs = metrics.gs;
 
-        draw_title(
-            self,
-            font_gui,
-            sw / 2.0,
-            20.0 * gs,
-            &text.get("options.chat.title"),
-            18.0 * gs,
-            gs,
-        );
+        self.draw_standard_screen(metrics, font_gui, "options.chat.title", 20.0 * gs, 18.0 * gs);
+        let text = self.state.settings.ui_text();
 
         let left_x = sw / 2.0 - metrics.btn_w - 4.0 * gs;
         let right_x = sw / 2.0 + 4.0 * gs;
@@ -424,7 +414,7 @@ impl Renderer {
 
         // Row 1: Width slider, Height slider
         draw_slider(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -433,12 +423,12 @@ impl Renderer {
             &format!(
                 "{}: {:.0}%",
                 text.get("options.chat.width"),
-                self.state.chat_width * 100.0
+                self.state.hud.chat_width() * 100.0
             ),
-            self.state.chat_width.clamp(0.1, 1.0),
+            self.state.hud.chat_width().clamp(0.1, 1.0),
         );
         draw_slider(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -447,15 +437,15 @@ impl Renderer {
             &format!(
                 "{}: {}",
                 text.get("options.chat.height"),
-                self.state.chat_height
+                self.state.hud.chat_height()
             ),
-            (self.state.chat_height as f32 - 1.0) / 29.0,
+            (self.state.hud.chat_height() as f32 - 1.0) / 29.0,
         );
 
         // Row 2: Background toggle, Chat Overlay toggle
         let row2_y = y + metrics.btn_h + metrics.btn_gap;
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -464,7 +454,7 @@ impl Renderer {
             &format!(
                 "{}: {}",
                 text.get("options.chat.background"),
-                if self.state.chat_background {
+                if self.state.hud.chat_background() {
                     text.get("options.on")
                 } else {
                     text.get("options.off")
@@ -472,7 +462,7 @@ impl Renderer {
             ),
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -481,7 +471,7 @@ impl Renderer {
             &format!(
                 "{}: {}",
                 text.get("options.chat.overlay"),
-                if self.state.chat_overlay {
+                if self.state.hud.chat_overlay() {
                     text.get("options.on")
                 } else {
                     text.get("options.off")
@@ -492,7 +482,7 @@ impl Renderer {
         // Row 3: Chat Avatars toggle, Tab Avatars toggle
         let row3_y = row2_y + metrics.btn_h + metrics.btn_gap;
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -501,7 +491,7 @@ impl Renderer {
             &format!(
                 "{}: {}",
                 text.get("options.chat avatars"),
-                if self.state.chat_player_avatars {
+                if self.state.hud.chat_player_avatars() {
                     text.get("options.on")
                 } else {
                     text.get("options.off")
@@ -509,7 +499,7 @@ impl Renderer {
             ),
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -518,7 +508,7 @@ impl Renderer {
             &format!(
                 "{}: {}",
                 text.get("options.chat.tabAvatars"),
-                if self.state.tab_player_avatars {
+                if self.state.hud.tab_player_avatars() {
                     text.get("options.on")
                 } else {
                     text.get("options.off")
@@ -528,7 +518,7 @@ impl Renderer {
 
         // Done button
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -549,36 +539,28 @@ impl Renderer {
         widget_gui: &mut GuiVertexBuilder,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        let text = self.state.ui_text.clone();
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
-        draw_title(
-            self,
-            font_gui,
-            sw / 2.0,
-            24.0 * gs,
-            text.get("options.videoTitle"),
-            18.0 * gs,
-            gs,
-        );
+        self.draw_standard_screen(metrics, font_gui, "options.videoTitle", 24.0 * gs, 18.0 * gs);
+        let text = self.state.settings.ui_text();
         let left_x = sw / 2.0 - metrics.btn_w - 4.0 * gs;
         let right_x = sw / 2.0 + 4.0 * gs;
         let rows = [
             (
                 OptionControl::slider(
                     btn::GUI_SCALE_DOWN,
-                    format!("{}: {}", text.get("options.guiScale"), self.state.gui_scale),
-                    gui_scale_slider_value(self.state.gui_scale),
+                    format!("{}: {}", text.get("options.guiScale"), self.state.settings.gui_scale()),
+                    gui_scale_slider_value(self.state.settings.gui_scale()),
                 ),
                 OptionControl::slider(
                     btn::FOV_DOWN,
                     format!(
                         "{}: {}",
                         text.get("options.fov"),
-                        fov_label(&text, self.state.fov)
+                        fov_label(&text, self.state.settings.fov())
                     ),
-                    (self.state.fov - 30.0) / 80.0,
+                    (self.state.settings.fov() - 30.0) / 80.0,
                 ),
             ),
             (
@@ -587,18 +569,18 @@ impl Renderer {
                     format!(
                         "{}: {}",
                         text.get("options.renderDistance"),
-                        self.state.render_distance
+                        self.state.settings.render_distance()
                     ),
-                    render_distance_slider_value(self.state.render_distance),
+                    render_distance_slider_value(self.state.settings.render_distance()),
                 ),
                 OptionControl::slider(
                     btn::FRAMERATE_DOWN,
                     format!(
                         "{}: {}",
                         text.get("options.framerateLimit"),
-                        framerate_label(&text, self.state.max_framerate)
+                        framerate_label(&text, self.state.settings.max_framerate())
                     ),
-                    framerate_slider_value(self.state.max_framerate),
+                    framerate_slider_value(self.state.settings.max_framerate()),
                 ),
             ),
             (
@@ -607,7 +589,7 @@ impl Renderer {
                     format!(
                         "{}: {}",
                         text.get("options.ao"),
-                        if self.state.smooth_lighting {
+                        if self.state.settings.smooth_lighting() {
                             text.get("options.ao.max")
                         } else {
                             text.get("options.ao.off")
@@ -619,7 +601,7 @@ impl Renderer {
                     format!(
                         "{}: {}",
                         text.get("options.particles"),
-                        particle_label(&text, &self.state.particles_label)
+                        particle_label(&text, &self.state.settings.particles_label())
                     ),
                 ),
             ),
@@ -629,7 +611,7 @@ impl Renderer {
                     0,
                     format!(
                         "FSR 3: {}",
-                        if self.state.fsr3_available {
+                        if self.state.server_list.fsr3_available() {
                             "Available"
                         } else {
                             "SDK not linked"
@@ -643,7 +625,7 @@ impl Renderer {
                     format!(
                         "{}: {}",
                         text.get("options.renderClouds"),
-                        text.bool_label(self.state.clouds)
+                        text.bool_label(self.state.settings.clouds())
                     ),
                 ),
                 OptionControl::single(
@@ -651,7 +633,7 @@ impl Renderer {
                     format!(
                         "{}: {}",
                         text.get("options.entityShadows"),
-                        text.bool_label(self.state.entity_shadows)
+                        text.bool_label(self.state.settings.entity_shadows())
                     ),
                 ),
             ),
@@ -660,7 +642,7 @@ impl Renderer {
                     btn::WEATHER_EFFECTS_TOGGLE,
                     format!(
                         "Weather Effects: {}",
-                        text.bool_label(self.state.weather_effects)
+                        text.bool_label(self.state.settings.weather_effects())
                     ),
                 ),
                 OptionControl::single(0, String::new()),
@@ -671,7 +653,7 @@ impl Renderer {
                     format!(
                         "{}: {}",
                         text.get("options.viewBobbing"),
-                        text.bool_label(self.state.view_bobbing)
+                        text.bool_label(self.state.settings.view_bobbing())
                     ),
                 ),
                 OptionControl::single(
@@ -679,7 +661,7 @@ impl Renderer {
                     format!(
                         "{}: {}",
                         text.get("options.advancedTooltips"),
-                        text.bool_label(self.state.advanced_tooltips)
+                        text.bool_label(self.state.settings.advanced_tooltips())
                     ),
                 ),
             ),
@@ -689,7 +671,7 @@ impl Renderer {
                     format!(
                         "{}: {}",
                         text.get("options.betterGrass"),
-                        text.bool_label(self.state.better_grass)
+                        text.bool_label(self.state.settings.better_grass())
                     ),
                 ),
                 OptionControl::single(
@@ -697,18 +679,18 @@ impl Renderer {
                     format!(
                         "{}: {}",
                         text.get("options.connectedTextures"),
-                        text.bool_label(self.state.connected_textures)
+                        text.bool_label(self.state.settings.connected_textures())
                     ),
                 ),
             ),
         ];
         for (row, (left, right)) in rows.iter().enumerate() {
             let y = 60.0 * gs + row as f32 * (metrics.btn_h + metrics.btn_gap);
-            draw_option_button(self, metrics, widget_gui, font_gui, left_x, y, left);
-            draw_option_button(self, metrics, widget_gui, font_gui, right_x, y, right);
+            draw_option_button(&mut self.font, metrics, widget_gui, font_gui, left_x, y, left);
+            draw_option_button(&mut self.font, metrics, widget_gui, font_gui, right_x, y, right);
         }
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -724,22 +706,14 @@ impl Renderer {
         widget_gui: &mut GuiVertexBuilder,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        let text = self.state.ui_text.clone();
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
-        draw_title(
-            self,
-            font_gui,
-            sw / 2.0,
-            24.0 * gs,
-            text.get("options.language"),
-            18.0 * gs,
-            gs,
-        );
+        self.draw_standard_screen(metrics, font_gui, "options.language", 24.0 * gs, 18.0 * gs);
+        let text = self.state.settings.ui_text();
         let current = format_text(
             text.get("rustcraft.language.current"),
-            &[&self.state.language_name, &self.state.language_code],
+            &[self.state.settings.language_name(), self.state.settings.language_code()],
         );
         font_gui.draw_text_shadowed(
             &mut self.font,
@@ -751,13 +725,13 @@ impl Renderer {
             gs,
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
             btn::LANGUAGE_TOGGLE,
             [metrics.btn_x, 96.0 * gs, metrics.btn_w, metrics.btn_h],
-            if self.state.language_code == "zh_CN" {
+            if self.state.settings.language_code() == "zh_CN" {
                 "English (US)"
             } else {
                 "简体中文"
@@ -772,7 +746,7 @@ impl Renderer {
             [0.65, 0.65, 0.65, 1.0],
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -788,63 +762,55 @@ impl Renderer {
         widget_gui: &mut GuiVertexBuilder,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        let text = self.state.ui_text.clone();
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
-        draw_title(
-            self,
-            font_gui,
-            sw / 2.0,
-            24.0 * gs,
-            text.get("options.sounds.title"),
-            18.0 * gs,
-            gs,
-        );
+        self.draw_standard_screen(metrics, font_gui, "options.sounds.title", 24.0 * gs, 18.0 * gs);
+        let text = self.state.settings.ui_text();
         let rows = [
             (
                 text.get("soundCategory.master"),
-                self.state.master_volume,
+                self.state.settings.master_volume(),
                 btn::MASTER_VOLUME_DOWN,
             ),
             (
                 text.get("soundCategory.music"),
-                self.state.music_volume,
+                self.state.settings.music_volume(),
                 btn::MUSIC_VOLUME_DOWN,
             ),
             (
                 text.get("soundCategory.block"),
-                self.state.blocks_volume,
+                self.state.settings.blocks_volume(),
                 btn::BLOCKS_VOLUME_DOWN,
             ),
             (
                 text.get("soundCategory.hostile"),
-                self.state.hostile_volume,
+                self.state.settings.hostile_volume(),
                 btn::HOSTILE_VOLUME_DOWN,
             ),
             (
                 text.get("soundCategory.neutral"),
-                self.state.friendly_volume,
+                self.state.settings.friendly_volume(),
                 btn::FRIENDLY_VOLUME_DOWN,
             ),
             (
                 text.get("soundCategory.player"),
-                self.state.players_volume,
+                self.state.settings.players_volume(),
                 btn::PLAYERS_VOLUME_DOWN,
             ),
             (
                 text.get("soundCategory.ambient"),
-                self.state.ambient_volume,
+                self.state.settings.ambient_volume(),
                 btn::AMBIENT_VOLUME_DOWN,
             ),
             (
                 text.get("soundCategory.weather"),
-                self.state.weather_volume,
+                self.state.settings.weather_volume(),
                 btn::WEATHER_VOLUME_DOWN,
             ),
             (
                 text.get("soundCategory.ui"),
-                self.state.ui_volume,
+                self.state.settings.ui_volume(),
                 btn::UI_VOLUME_DOWN,
             ),
         ];
@@ -854,7 +820,7 @@ impl Renderer {
             let x = sw / 2.0 - metrics.btn_w - 4.0 * gs + col as f32 * (metrics.btn_w + 8.0 * gs);
             let y = 58.0 * gs + row as f32 * (metrics.btn_h + metrics.btn_gap);
             draw_slider(
-                self,
+                &mut self.font,
                 metrics,
                 widget_gui,
                 font_gui,
@@ -869,10 +835,10 @@ impl Renderer {
         let device_label = format!(
             "{}: {}",
             text.get("soundCategory.master"),
-            self.state.audio_device
+            self.state.settings.audio_device()
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -880,7 +846,7 @@ impl Renderer {
             [metrics.btn_x, device_y, metrics.btn_w, metrics.btn_h],
             &device_label,
         );
-        let null_text = if self.state.audio_device == "null" {
+        let null_text = if self.state.settings.audio_device() == "null" {
             text.get("rustcraft.audio.nullBackend")
         } else {
             ""
@@ -894,7 +860,7 @@ impl Renderer {
             [0.65, 0.65, 0.65, 1.0],
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -910,19 +876,11 @@ impl Renderer {
         widget_gui: &mut GuiVertexBuilder,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        let text = self.state.ui_text.clone();
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
-        draw_title(
-            self,
-            font_gui,
-            sw / 2.0,
-            24.0 * gs,
-            text.get("options.skinCustomisation.title"),
-            18.0 * gs,
-            gs,
-        );
+        self.draw_standard_screen(metrics, font_gui, "options.skinCustomisation.title", 24.0 * gs, 18.0 * gs);
+        let text = self.state.settings.ui_text();
         let left_x = sw / 2.0 - metrics.btn_w - 4.0 * gs;
         let right_x = sw / 2.0 + 4.0 * gs;
         let rows = [
@@ -966,7 +924,7 @@ impl Renderer {
             let x = if i % 2 == 0 { left_x } else { right_x };
             let y = 58.0 * gs + (i / 2) as f32 * (metrics.btn_h + metrics.btn_gap);
             draw_button(
-                self,
+                &mut self.font,
                 metrics,
                 widget_gui,
                 font_gui,
@@ -975,12 +933,12 @@ impl Renderer {
                 &format!(
                     "{}: {}",
                     label,
-                    text.bool_label(self.state.skin_parts & *mask != 0)
+                    text.bool_label(self.state.settings.skin_parts() & *mask != 0)
                 ),
             );
         }
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -991,7 +949,7 @@ impl Renderer {
                 metrics.btn_w,
                 metrics.btn_h,
             ],
-            if self.state.skin_parts == 0x7f {
+            if self.state.settings.skin_parts() == 0x7f {
                 text.get("gui.all")
             } else {
                 text.get("rustcraft.skin.allCustom")
@@ -1006,7 +964,7 @@ impl Renderer {
             [0.65, 0.65, 0.65, 1.0],
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -1022,21 +980,13 @@ impl Renderer {
         widget_gui: &mut GuiVertexBuilder,
         font_gui: &mut GuiVertexBuilder,
     ) {
-        let text = self.state.ui_text.clone();
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
         let font_sz = metrics.font_sz;
         let desc_sz = font_sz * 0.62;
-        draw_title(
-            self,
-            font_gui,
-            sw / 2.0,
-            24.0 * gs,
-            text.get("resourcePack.title"),
-            18.0 * gs,
-            gs,
-        );
+        self.draw_standard_screen(metrics, font_gui, "resourcePack.title", 24.0 * gs, 18.0 * gs);
+        let text = self.state.settings.ui_text();
 
         let col_w = 190.0 * gs;
         let col_gap = 8.0 * gs;
@@ -1083,7 +1033,7 @@ impl Renderer {
         );
 
         // Draw available packs (left column)
-        let packs = self.state.available_resource_packs.clone();
+        let packs = self.state.server_list.available_resource_packs().clone();
         for (i, pack) in packs.iter().enumerate() {
             if i >= btn::RESOURCE_PACK_MAX {
                 break;
@@ -1097,7 +1047,7 @@ impl Renderer {
                 format!("{} §c(incompatible)", pack.name)
             };
             draw_button(
-                self,
+                &mut self.font,
                 metrics,
                 widget_gui,
                 font_gui,
@@ -1126,7 +1076,7 @@ impl Renderer {
         }
 
         // Draw selected packs (right column)
-        let selected_packs = self.state.selected_resource_packs.clone();
+        let selected_packs = self.state.server_list.selected_resource_packs().clone();
         for (i, pack) in selected_packs.iter().enumerate() {
             if i >= btn::RESOURCE_PACK_SELECTED_MAX {
                 break;
@@ -1140,7 +1090,7 @@ impl Renderer {
                 format!("{} §c(incompatible)", pack.name)
             };
             draw_button(
-                self,
+                &mut self.font,
                 metrics,
                 widget_gui,
                 font_gui,
@@ -1175,13 +1125,13 @@ impl Renderer {
                     && id < btn::RESOURCE_PACK_BASE + btn::RESOURCE_PACK_MAX as u32
                 {
                     let idx = (id - btn::RESOURCE_PACK_BASE) as usize;
-                    self.state.available_resource_packs.get(idx)
+                    self.state.server_list.available_resource_packs().get(idx)
                 } else if id >= btn::RESOURCE_PACK_SELECTED_BASE
                     && id
                         < btn::RESOURCE_PACK_SELECTED_BASE + btn::RESOURCE_PACK_SELECTED_MAX as u32
                 {
                     let idx = (id - btn::RESOURCE_PACK_SELECTED_BASE) as usize;
-                    self.state.selected_resource_packs.get(idx)
+                    self.state.server_list.selected_resource_packs().get(idx)
                 } else {
                     None
                 }
@@ -1266,7 +1216,7 @@ impl Renderer {
 
         // Bottom buttons
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -1275,7 +1225,7 @@ impl Renderer {
             text.get("resourcePack.openFolder"),
         );
         draw_button(
-            self,
+            &mut self.font,
             metrics,
             widget_gui,
             font_gui,
@@ -1292,10 +1242,33 @@ impl Renderer {
             [0.65, 0.65, 0.65, 1.0],
         );
     }
+
+    /// Draws the standard centered screen title by borrowing `ui_text` instead
+    /// of cloning the full `HashMap` each frame. Callers should separately
+    /// borrow `self.state.settings.ui_text()` for any body content.
+    fn draw_standard_screen(
+        &mut self,
+        metrics: &MenuMetrics,
+        font_gui: &mut GuiVertexBuilder,
+        title_key: &'static str,
+        title_y: f32,
+        title_size: f32,
+    ) {
+        let text = self.state.settings.ui_text();
+        font_gui.draw_text_shadowed(
+            &mut self.font,
+            metrics.sw / 2.0,
+            title_y,
+            text.get(title_key),
+            title_size,
+            [1.0, 1.0, 1.0, 1.0],
+            metrics.gs,
+        );
+    }
 }
 
 fn draw_button(
-    renderer: &mut Renderer,
+    font: &mut crate::ui::font::FontRenderer,
     metrics: &MenuMetrics,
     widget_gui: &mut GuiVertexBuilder,
     font_gui: &mut GuiVertexBuilder,
@@ -1310,12 +1283,12 @@ fn draw_button(
         id,
         rect,
         label,
-        &mut renderer.font,
+        font,
     );
 }
 
 fn draw_button_enabled(
-    renderer: &mut Renderer,
+    font: &mut crate::ui::font::FontRenderer,
     metrics: &MenuMetrics,
     widget_gui: &mut GuiVertexBuilder,
     font_gui: &mut GuiVertexBuilder,
@@ -1325,14 +1298,14 @@ fn draw_button_enabled(
     enabled: bool,
 ) {
     if enabled {
-        draw_button(renderer, metrics, widget_gui, font_gui, id, rect, label);
+        draw_button(font, metrics, widget_gui, font_gui, id, rect, label);
         return;
     }
 
     let [x, y, w, h] = rect;
     widget_gui.draw_button_rect_state(x, y, w, h, 2);
     font_gui.draw_text_shadowed(
-        &mut renderer.font,
+        font,
         x + w / 2.0,
         y + (h - metrics.font_sz) / 2.0,
         label,
@@ -1400,7 +1373,7 @@ impl OptionControl {
 }
 
 fn draw_slider(
-    renderer: &mut Renderer,
+    font: &mut crate::ui::font::FontRenderer,
     metrics: &MenuMetrics,
     widget_gui: &mut GuiVertexBuilder,
     font_gui: &mut GuiVertexBuilder,
@@ -1417,7 +1390,7 @@ fn draw_slider(
     widget_gui.draw_slider_rect_state(x, y, w, h, value, thumb_hovered);
     widget_gui.register_button(id, x, y, w, h);
     font_gui.draw_text_shadowed(
-        &mut renderer.font,
+        font,
         x + w / 2.0,
         y + (h - metrics.font_sz) / 2.0,
         label,
@@ -1428,7 +1401,7 @@ fn draw_slider(
 }
 
 fn draw_title(
-    renderer: &mut Renderer,
+    font: &mut crate::ui::font::FontRenderer,
     font_gui: &mut GuiVertexBuilder,
     x: f32,
     y: f32,
@@ -1437,7 +1410,7 @@ fn draw_title(
     gs: f32,
 ) {
     font_gui.draw_text_shadowed(
-        &mut renderer.font,
+        font,
         x,
         y,
         text,
@@ -1448,7 +1421,7 @@ fn draw_title(
 }
 
 fn draw_option_button(
-    renderer: &mut Renderer,
+    font: &mut crate::ui::font::FontRenderer,
     metrics: &MenuMetrics,
     widget_gui: &mut GuiVertexBuilder,
     font_gui: &mut GuiVertexBuilder,
@@ -1458,7 +1431,7 @@ fn draw_option_button(
 ) {
     if let Some(value) = option.slider_value {
         draw_slider(
-            renderer,
+            font,
             metrics,
             widget_gui,
             font_gui,
@@ -1469,7 +1442,7 @@ fn draw_option_button(
         );
     } else {
         draw_button(
-            renderer,
+            font,
             metrics,
             widget_gui,
             font_gui,
@@ -1488,7 +1461,7 @@ fn draw_option_button(
                 metrics.btn_h,
                 metrics.font_sz,
                 metrics.gs,
-                &mut renderer.font,
+                font,
             );
         }
     }

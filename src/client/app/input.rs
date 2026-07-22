@@ -22,28 +22,28 @@ impl App {
     /// Merge the current cross-platform controller state into the normal action
     /// input.  Gameplay consumers therefore do not need a gamepad-specific path.
     pub(super) fn poll_gamepad(&mut self, event_loop: &ActiveEventLoop) {
-        let frame = self.gamepad.poll(&self.keybinds);
-        self.input.set_gamepad_held(frame.held.clone());
+        let frame = self.input_ctrl.gamepad.poll(&self.input_ctrl.keybinds);
+        self.input_ctrl.input.set_gamepad_held(frame.held.clone());
 
         if matches!(self.state, GameState::Controls { .. }) && frame.used {
-            self.control_device = ControlDevice::Gamepad;
+            self.input_ctrl.control_device = ControlDevice::Gamepad;
         }
         if matches!(self.state, GameState::Controls { .. })
-            && matches!(self.control_device, ControlDevice::Gamepad)
-            && self.rebinding_action.is_some()
+            && matches!(self.input_ctrl.control_device, ControlDevice::Gamepad)
+            && self.input_ctrl.rebinding_action.is_some()
         {
             if let Some(binding) = frame.binding_pressed.first().copied() {
-                let action = self.rebinding_action.expect("checked above");
-                self.keybinds.set_gamepad(action, binding);
-                self.config.keybinds = self.keybinds.clone();
+                let action = self.input_ctrl.rebinding_action.expect("checked above");
+                self.input_ctrl.keybinds.set_gamepad(action, binding);
+                self.config.keybinds = self.input_ctrl.keybinds.clone();
                 self.config.save_default();
-                self.rebinding_action = None;
+                self.input_ctrl.rebinding_action = None;
             }
             // While listening, the same button must not activate a menu item.
             return;
         }
 
-        if self.mouse_captured {
+        if self.input_ctrl.mouse_captured {
             // `process_mouse` is also the camera's sensitivity/clamping path.
             // Feed stick deflection through it so mouse and controller cameras
             // share exactly the same view behaviour.
@@ -58,7 +58,7 @@ impl App {
             self.move_virtual_cursor(frame.look_x, frame.look_y);
         }
 
-        if !self.mouse_captured {
+        if !self.input_ctrl.mouse_captured {
             if let Some(direction) = frame.navigation {
                 self.move_menu_cursor(direction);
                 self.extend_gamepad_inventory_drag();
@@ -79,7 +79,7 @@ impl App {
         }
 
         let gameplay_input = matches!(self.state, GameState::Playing)
-            && self.mouse_captured
+            && self.input_ctrl.mouse_captured
             && !self.inventory_open
             && !self.chat_open
             && self.session.health > 0.0
@@ -93,8 +93,8 @@ impl App {
             let use_pressed = frame.pressed.contains(&Action::Use);
             let gamepad_attack_down = frame.held.contains(&Action::Attack);
             let gamepad_use_down = frame.held.contains(&Action::Use);
-            let attack_down = self.input.is_held(Action::Attack);
-            let use_down = self.input.is_held(Action::Use);
+            let attack_down = self.input_ctrl.input.is_held(Action::Attack);
+            let use_down = self.input_ctrl.input.is_held(Action::Use);
 
             if !gamepad_attack_down {
                 self.gamepad_attack_consumed = false;
@@ -125,7 +125,7 @@ impl App {
         }
 
         for action in frame.pressed {
-            if !self.mouse_captured {
+            if !self.input_ctrl.mouse_captured {
                 self.handle_gamepad_ui_press(event_loop, action);
                 continue;
             }
@@ -134,7 +134,7 @@ impl App {
                 crate::scripting::api::input::InputEdge::Pressed,
                 false,
             ) {
-                self.input.just_pressed.remove(&action);
+                self.input_ctrl.input.just_pressed.remove(&action);
                 continue;
             }
             self.handle_key_press(event_loop, Some(action));
@@ -150,23 +150,23 @@ impl App {
         let size = window.inner_size();
         let max_x = size.width.saturating_sub(1) as f64;
         let max_y = size.height.saturating_sub(1) as f64;
-        if self.mouse_x == 0.0 && self.mouse_y == 0.0 {
-            self.mouse_x = max_x * 0.5;
-            self.mouse_y = max_y * 0.5;
+        if self.input_ctrl.mouse_x == 0.0 && self.input_ctrl.mouse_y == 0.0 {
+            self.input_ctrl.mouse_x = max_x * 0.5;
+            self.input_ctrl.mouse_y = max_y * 0.5;
         }
         let speed = MAX_CURSOR_SPEED * self.config.gamepad_cursor_speed.clamp(0.0, 1.0) as f64;
-        self.mouse_x = (self.mouse_x + x as f64 * speed).clamp(0.0, max_x);
-        self.mouse_y = (self.mouse_y + y as f64 * speed).clamp(0.0, max_y);
+        self.input_ctrl.mouse_x = (self.input_ctrl.mouse_x + x as f64 * speed).clamp(0.0, max_x);
+        self.input_ctrl.mouse_y = (self.input_ctrl.mouse_y + y as f64 * speed).clamp(0.0, max_y);
 
         if let Some(renderer) = &mut self.renderer {
-            renderer.set_gui_mouse_pos(self.mouse_x as f32, self.mouse_y as f32);
+            renderer.set_gui_mouse_pos(self.input_ctrl.mouse_x as f32, self.input_ctrl.mouse_y as f32);
         }
         // Reuse the platform cursor as the virtual cursor. This is visible on
         // every platform supported by winit and keeps hover/tooltip rendering
         // identical to mouse operation.
         let _ = window.set_cursor_position(winit::dpi::PhysicalPosition::new(
-            self.mouse_x,
-            self.mouse_y,
+            self.input_ctrl.mouse_x,
+            self.input_ctrl.mouse_y,
         ));
     }
 
@@ -179,10 +179,10 @@ impl App {
             // A menu may open while the pointer is still at an old gameplay
             // position. Start from the screen centre until a button is focused.
             let (x, y) = if renderer
-                .gui_hit_test(self.mouse_x as f32, self.mouse_y as f32)
+                .gui_hit_test(self.input_ctrl.mouse_x as f32, self.input_ctrl.mouse_y as f32)
                 .is_some()
             {
-                (self.mouse_x as f32, self.mouse_y as f32)
+                (self.input_ctrl.mouse_x as f32, self.input_ctrl.mouse_y as f32)
             } else {
                 viewport_center.unwrap_or((640.0, 360.0))
             };
@@ -190,15 +190,15 @@ impl App {
         }) else {
             return;
         };
-        self.mouse_x = (hit.x + hit.w * 0.5) as f64;
-        self.mouse_y = (hit.y + hit.h * 0.5) as f64;
+        self.input_ctrl.mouse_x = (hit.x + hit.w * 0.5) as f64;
+        self.input_ctrl.mouse_y = (hit.y + hit.h * 0.5) as f64;
         if let Some(renderer) = &mut self.renderer {
-            renderer.set_gui_mouse_pos(self.mouse_x as f32, self.mouse_y as f32);
+            renderer.set_gui_mouse_pos(self.input_ctrl.mouse_x as f32, self.input_ctrl.mouse_y as f32);
         }
         if let Some(window) = &self.window {
             let _ = window.set_cursor_position(winit::dpi::PhysicalPosition::new(
-                self.mouse_x,
-                self.mouse_y,
+                self.input_ctrl.mouse_x,
+                self.input_ctrl.mouse_y,
             ));
         }
     }
@@ -210,7 +210,7 @@ impl App {
                 if self.inventory_open {
                     self.begin_gamepad_inventory_drag(MouseButton::Left);
                 } else if let Some(button_id) = self.renderer.as_ref().and_then(|renderer| {
-                    renderer.gui_hit_test(self.mouse_x as f32, self.mouse_y as f32)
+                    renderer.gui_hit_test(self.input_ctrl.mouse_x as f32, self.input_ctrl.mouse_y as f32)
                 }) {
                     self.handle_button_click(button_id, event_loop);
                 }
@@ -243,7 +243,7 @@ impl App {
         };
 
         if matches!(self.state, GameState::Controls { .. }) && key_event.state.is_pressed() {
-            self.control_device = ControlDevice::KeyboardMouse;
+            self.input_ctrl.control_device = ControlDevice::KeyboardMouse;
         }
 
         // Track Ctrl key state
@@ -258,7 +258,7 @@ impl App {
             && !key_event.repeat
         {
             if let Some(renderer) = &mut self.renderer {
-                renderer.state.debug_overlay = !renderer.state.debug_overlay;
+                renderer.state.settings.set_debug_overlay(!renderer.state.settings.debug_overlay());
             }
             return;
         }
@@ -276,16 +276,16 @@ impl App {
         }
 
         if matches!(self.state, GameState::Controls { .. }) {
-            if let Some(action) = self.rebinding_action {
+            if let Some(action) = self.input_ctrl.rebinding_action {
                 if key_event.state.is_pressed() {
                     if matches!(code, KeyCode::Escape | KeyCode::Backspace | KeyCode::Delete) {
-                        self.keybinds.clear(action);
+                        self.input_ctrl.keybinds.clear(action);
                     } else {
-                        self.keybinds.set_key(action, code);
+                        self.input_ctrl.keybinds.set_key(action, code);
                     }
-                    self.config.keybinds = self.keybinds.clone();
+                    self.config.keybinds = self.input_ctrl.keybinds.clone();
                     self.config.save_default();
-                    self.rebinding_action = None;
+                    self.input_ctrl.rebinding_action = None;
                 }
                 return;
             }
@@ -309,7 +309,7 @@ impl App {
             }
             if code == KeyCode::Enter && !key_event.repeat {
                 if let Some(button_id) = self.renderer.as_ref().and_then(|renderer| {
-                    renderer.gui_hit_test(self.mouse_x as f32, self.mouse_y as f32)
+                    renderer.gui_hit_test(self.input_ctrl.mouse_x as f32, self.input_ctrl.mouse_y as f32)
                 }) {
                     self.handle_button_click(button_id, event_loop);
                     return;
@@ -317,7 +317,7 @@ impl App {
             }
         }
 
-        let action = self.keybinds.action_for_key(code);
+        let action = self.input_ctrl.keybinds.action_for_key(code);
 
         if key_event.state.is_pressed() {
             if matches!(self.state, GameState::AltManager) {
@@ -391,7 +391,7 @@ impl App {
                     _ => {}
                 }
                 if let Some(renderer) = &mut self.renderer {
-                    renderer.state.modding_scroll = self.modding_selected.saturating_sub(4);
+                    renderer.state.server_list.set_modding_scroll(self.modding_selected.saturating_sub(4));
                 }
                 return;
             }
@@ -431,7 +431,7 @@ impl App {
                     _ => {}
                 }
                 if let Some(renderer) = &mut self.renderer {
-                    renderer.state.mod_config_scroll = self.mod_config_selected.saturating_sub(4);
+                    renderer.state.server_list.set_mod_config_scroll(self.mod_config_selected.saturating_sub(4));
                 }
                 return;
             }
@@ -512,39 +512,39 @@ impl App {
             let creative_search_open = self.inventory_open
                 && self.session.gamemode == 1
                 && self.renderer.as_ref().is_some_and(|renderer| {
-                    renderer.state.creative_tab
+                    renderer.state.inventory.creative_tab()
                         == crate::render::hud::inventory::CREATIVE_TAB_SEARCH
                 });
             if creative_search_open && !matches!(action, Some(Action::Pause | Action::Inventory)) {
                 if let Some(renderer) = &mut self.renderer {
                     match code {
                         KeyCode::Backspace | KeyCode::Delete => {
-                            renderer.state.creative_search.pop();
+                            renderer.state.inventory.creative_search_mut().pop();
                         }
                         KeyCode::KeyV if self.ctrl_held => {
                             if let Some(text) = get_clipboard_text() {
-                                append_creative_search(&mut renderer.state.creative_search, &text);
+                                append_creative_search(&mut renderer.state.inventory.creative_search_mut(), &text);
                             }
                         }
                         _ => {
                             if let Some(text) = key_event.text.as_deref() {
-                                append_creative_search(&mut renderer.state.creative_search, text);
+                                append_creative_search(&mut renderer.state.inventory.creative_search_mut(), text);
                             }
                         }
                     }
-                    renderer.state.creative_scroll = 0.0;
+                    renderer.state.inventory.set_creative_scroll(0.0);
                 }
                 return;
             }
 
             if let Some(act) = action {
-                self.input.on_key_down(act);
+                self.input_ctrl.input.on_key_down(act);
                 if self.dispatch_script_input_edge(
                     act,
                     crate::scripting::api::input::InputEdge::Pressed,
                     key_event.repeat,
                 ) {
-                    self.input.just_pressed.remove(&act);
+                    self.input_ctrl.input.just_pressed.remove(&act);
                     return;
                 }
             }
@@ -554,13 +554,13 @@ impl App {
             self.handle_key_press(event_loop, action);
         } else {
             if let Some(act) = action {
-                self.input.on_key_up(act);
+                self.input_ctrl.input.on_key_up(act);
                 if self.dispatch_script_input_edge(
                     act,
                     crate::scripting::api::input::InputEdge::Released,
                     false,
                 ) {
-                    self.input.just_released.remove(&act);
+                    self.input_ctrl.input.just_released.remove(&act);
                 }
             }
             if matches!(self.state, GameState::Playing) && code == KeyCode::Tab {
@@ -576,7 +576,7 @@ impl App {
                     self.close_inventory_screen(true);
                 } else {
                     self.state = GameState::Paused;
-                    self.mouse_captured = false;
+                    self.input_ctrl.mouse_captured = false;
                     self.set_cursor_captured(false);
                 }
             }
@@ -590,7 +590,7 @@ impl App {
                 self.open_chat("/");
             }
             GameState::Playing if self.inventory_open && action == Some(Action::DropItem) => {
-                let drop_stack = self.input.is_held(Action::Sprint);
+                let drop_stack = self.input_ctrl.input.is_held(Action::Sprint);
                 self.drop_hovered_inventory_slot(drop_stack);
             }
             GameState::Playing if !self.inventory_open => match action {
@@ -606,7 +606,7 @@ impl App {
                 Some(Action::HotbarPrev) => self.select_hotbar((self.inventory.selected + 8) % 9),
                 Some(Action::HotbarNext) => self.select_hotbar((self.inventory.selected + 1) % 9),
                 Some(Action::DropItem) => {
-                    let drop_stack = self.input.is_held(Action::Sprint);
+                    let drop_stack = self.input_ctrl.input.is_held(Action::Sprint);
                     self.spawn_predicted_dropped_item(drop_stack);
                     self.audio.play(crate::audio::SoundEvent {
                         name: "random.pop".to_string(),
@@ -615,13 +615,13 @@ impl App {
                         pitch: (rand_f32() - rand_f32()) * 0.2 + 1.0,
                         position: None,
                     });
-                    client::network::send_drop_selected_item(&self.connection, drop_stack);
+                    client::network::send_drop_selected_item(&self.net_ctrl.connection, drop_stack);
                 }
                 _ => {}
             },
             GameState::Paused if action == Some(Action::Pause) => {
                 self.state = GameState::Playing;
-                self.mouse_captured = true;
+                self.input_ctrl.mouse_captured = true;
                 self.set_cursor_captured(true);
             }
             GameState::Options { .. }
@@ -642,7 +642,7 @@ impl App {
             }
             GameState::MainMenu if action == Some(Action::Pause) => {
                 self.renderer = None;
-                self.connection = None;
+                self.net_ctrl.connection = None;
                 event_loop.exit();
             }
             _ => {}
@@ -664,10 +664,10 @@ impl App {
         }
         if self.inventory_open && self.session.gamemode == 1 {
             if let Some(renderer) = &mut self.renderer {
-                if renderer.state.creative_tab == crate::render::hud::inventory::CREATIVE_TAB_SEARCH
+                if renderer.state.inventory.creative_tab() == crate::render::hud::inventory::CREATIVE_TAB_SEARCH
                 {
-                    append_creative_search(&mut renderer.state.creative_search, text);
-                    renderer.state.creative_scroll = 0.0;
+                    append_creative_search(&mut renderer.state.inventory.creative_search_mut(), text);
+                    renderer.state.inventory.set_creative_scroll(0.0);
                     return;
                 }
             }
@@ -692,14 +692,13 @@ impl App {
         // Chat scrolling (when chat is open)
         if self.chat_open {
             if let Some(renderer) = &mut self.renderer {
-                let total = renderer.state.chat_lines.len();
+                let total = renderer.state.hud.chat_lines().len();
                 let max_visible = 15;
                 let max_scroll = total.saturating_sub(max_visible);
                 if scroll_lines > 0.0 {
-                    renderer.state.chat_scroll =
-                        (renderer.state.chat_scroll + rows).min(max_scroll);
+                    renderer.state.hud.set_chat_scroll((renderer.state.hud.chat_scroll() + rows).min(max_scroll));
                 } else {
-                    renderer.state.chat_scroll = renderer.state.chat_scroll.saturating_sub(rows);
+                    renderer.state.hud.set_chat_scroll(renderer.state.hud.chat_scroll().saturating_sub(rows));
                 }
             }
             return;
@@ -707,21 +706,21 @@ impl App {
 
         if rows > 0 && matches!(self.state, GameState::Multiplayer) {
             if let Some(renderer) = &mut self.renderer {
-                renderer.state.server_list_scroll = if scroll_lines > 0.0 {
-                    renderer.state.server_list_scroll.saturating_sub(rows)
+                renderer.state.server_list.set_server_list_scroll(if scroll_lines > 0.0 {
+                    renderer.state.server_list.server_list_scroll().saturating_sub(rows)
                 } else {
-                    renderer.state.server_list_scroll.saturating_add(rows)
-                };
+                    renderer.state.server_list.server_list_scroll().saturating_add(rows)
+                });
             }
             return;
         }
         if rows > 0 && matches!(self.state, GameState::Controls { .. }) {
             if let Some(renderer) = &mut self.renderer {
-                renderer.state.controls_list_scroll = if scroll_lines > 0.0 {
-                    renderer.state.controls_list_scroll.saturating_sub(rows)
+                renderer.state.settings.set_controls_list_scroll(if scroll_lines > 0.0 {
+                    renderer.state.settings.controls_list_scroll().saturating_sub(rows)
                 } else {
-                    renderer.state.controls_list_scroll.saturating_add(rows)
-                };
+                    renderer.state.settings.controls_list_scroll().saturating_add(rows)
+                });
             }
             return;
         }
@@ -732,10 +731,10 @@ impl App {
                 .map(|window| window.inner_size().width as f64)
                 .unwrap_or(1280.0);
             if let Some(renderer) = &mut self.renderer {
-                let scroll = if self.mouse_x < window_width * 0.5 {
-                    &mut renderer.state.available_resource_pack_scroll
+                let scroll = if self.input_ctrl.mouse_x < window_width * 0.5 {
+                    renderer.state.server_list.available_resource_pack_scroll_mut()
                 } else {
-                    &mut renderer.state.selected_resource_pack_scroll
+                    renderer.state.server_list.selected_resource_pack_scroll_mut()
                 };
                 *scroll = if scroll_lines > 0.0 {
                     scroll.saturating_sub(rows)
@@ -747,31 +746,31 @@ impl App {
         }
         if rows > 0 && matches!(self.state, GameState::ShaderPacks { .. }) {
             if let Some(renderer) = &mut self.renderer {
-                renderer.state.shader_pack_scroll = if scroll_lines > 0.0 {
-                    renderer.state.shader_pack_scroll.saturating_sub(rows)
+                renderer.state.server_list.set_shader_pack_scroll(if scroll_lines > 0.0 {
+                    renderer.state.server_list.shader_pack_scroll().saturating_sub(rows)
                 } else {
-                    renderer.state.shader_pack_scroll.saturating_add(rows)
-                };
+                    renderer.state.server_list.shader_pack_scroll().saturating_add(rows)
+                });
             }
             return;
         }
         if rows > 0 && matches!(self.state, GameState::Modding { .. }) {
             if let Some(renderer) = &mut self.renderer {
-                renderer.state.modding_scroll = if scroll_lines > 0.0 {
-                    renderer.state.modding_scroll.saturating_sub(rows)
+                renderer.state.server_list.set_modding_scroll(if scroll_lines > 0.0 {
+                    renderer.state.server_list.modding_scroll().saturating_sub(rows)
                 } else {
-                    renderer.state.modding_scroll.saturating_add(rows)
-                };
+                    renderer.state.server_list.modding_scroll().saturating_add(rows)
+                });
             }
             return;
         }
         if rows > 0 && matches!(self.state, GameState::ModConfig { .. }) {
             if let Some(renderer) = &mut self.renderer {
-                renderer.state.mod_config_scroll = if scroll_lines > 0.0 {
-                    renderer.state.mod_config_scroll.saturating_sub(rows)
+                renderer.state.server_list.set_mod_config_scroll(if scroll_lines > 0.0 {
+                    renderer.state.server_list.mod_config_scroll().saturating_sub(rows)
                 } else {
-                    renderer.state.mod_config_scroll.saturating_add(rows)
-                };
+                    renderer.state.server_list.mod_config_scroll().saturating_add(rows)
+                });
             }
             return;
         }
@@ -786,11 +785,11 @@ impl App {
                 let max_scroll_rows =
                     crate::render::hud::inventory::creative_max_scroll_rows(items.len()) as f32;
                 if max_scroll_rows > 0.0 {
-                    renderer.state.creative_scroll = (renderer.state.creative_scroll
+                    renderer.state.inventory.set_creative_scroll((renderer.state.inventory.creative_scroll()
                         - scroll_lines / max_scroll_rows)
-                        .clamp(0.0, 1.0);
+                        .clamp(0.0, 1.0));
                 } else {
-                    renderer.state.creative_scroll = 0.0;
+                    renderer.state.inventory.set_creative_scroll(0.0);
                 }
             }
             return;
@@ -810,7 +809,7 @@ impl App {
         pressed: bool,
     ) {
         if matches!(self.state, GameState::Controls { .. }) && pressed {
-            self.control_device = ControlDevice::KeyboardMouse;
+            self.input_ctrl.control_device = ControlDevice::KeyboardMouse;
         }
         if button == MouseButton::Left && !pressed {
             // GuiOptionSlider.mouseReleased always stops a drag, including when
@@ -824,21 +823,21 @@ impl App {
         }
 
         if matches!(self.state, GameState::Controls { .. }) {
-            if let Some(action) = self.rebinding_action {
+            if let Some(action) = self.input_ctrl.rebinding_action {
                 if pressed {
-                    self.keybinds.set_mouse(action, button);
-                    self.config.keybinds = self.keybinds.clone();
+                    self.input_ctrl.keybinds.set_mouse(action, button);
+                    self.config.keybinds = self.input_ctrl.keybinds.clone();
                     self.config.save_default();
-                    self.rebinding_action = None;
+                    self.input_ctrl.rebinding_action = None;
                 }
                 return;
             }
         }
 
-        let mouse_action = self.keybinds.action_for_mouse(button);
+        let mouse_action = self.input_ctrl.keybinds.action_for_mouse(button);
         if let Some(action) = mouse_action {
             let gameplay_edge = matches!(self.state, GameState::Playing)
-                && self.mouse_captured
+                && self.input_ctrl.mouse_captured
                 && !self.inventory_open
                 && self.session.health > 0.0
                 && !self
@@ -846,12 +845,12 @@ impl App {
                     .resource_pack
                     .as_ref()
                     .is_some_and(|pack| pack.status == "available");
-            let release_of_observed_action = !pressed && self.input.is_held(action);
+            let release_of_observed_action = !pressed && self.input_ctrl.input.is_held(action);
             if gameplay_edge || release_of_observed_action {
                 if pressed {
-                    self.input.on_key_down(action);
+                    self.input_ctrl.input.on_key_down(action);
                 } else {
-                    self.input.on_key_up(action);
+                    self.input_ctrl.input.on_key_up(action);
                 }
                 let edge = if pressed {
                     crate::scripting::api::input::InputEdge::Pressed
@@ -861,10 +860,10 @@ impl App {
                 let consumed = self.dispatch_script_input_edge(action, edge, false);
                 if consumed {
                     if pressed {
-                        self.input.just_pressed.remove(&action);
+                        self.input_ctrl.input.just_pressed.remove(&action);
                         return;
                     }
-                    self.input.just_released.remove(&action);
+                    self.input_ctrl.input.just_released.remove(&action);
                 }
             }
         }
@@ -873,7 +872,7 @@ impl App {
                 let hit = self
                     .renderer
                     .as_ref()
-                    .and_then(|r| r.gui_hit_test(self.mouse_x as f32, self.mouse_y as f32));
+                    .and_then(|r| r.gui_hit_test(self.input_ctrl.mouse_x as f32, self.input_ctrl.mouse_y as f32));
                 if let Some(btn_id) = hit {
                     self.handle_button_click(btn_id, event_loop);
                 }
@@ -888,7 +887,7 @@ impl App {
                 let hit = self
                     .renderer
                     .as_ref()
-                    .and_then(|r| r.gui_hit_test(self.mouse_x as f32, self.mouse_y as f32));
+                    .and_then(|r| r.gui_hit_test(self.input_ctrl.mouse_x as f32, self.input_ctrl.mouse_y as f32));
                 if let Some(btn_id) = hit {
                     self.handle_button_click(btn_id, event_loop);
                 }
@@ -908,19 +907,19 @@ impl App {
                 let hit = self
                     .renderer
                     .as_ref()
-                    .and_then(|r| r.gui_hit_test(self.mouse_x as f32, self.mouse_y as f32));
+                    .and_then(|r| r.gui_hit_test(self.input_ctrl.mouse_x as f32, self.input_ctrl.mouse_y as f32));
                 if let Some(btn_id) = hit {
                     self.handle_button_click(btn_id, event_loop);
                 }
             }
             (GameState::Playing, _, true)
-                if mouse_action == Some(Action::Attack) && !self.mouse_captured =>
+                if mouse_action == Some(Action::Attack) && !self.input_ctrl.mouse_captured =>
             {
-                self.mouse_captured = true;
+                self.input_ctrl.mouse_captured = true;
                 self.set_cursor_captured(true);
             }
             (GameState::Playing, _, _)
-                if mouse_action == Some(Action::Attack) && self.mouse_captured =>
+                if mouse_action == Some(Action::Attack) && self.input_ctrl.mouse_captured =>
             {
                 if pressed {
                     self.pending_attacks = self.pending_attacks.saturating_add(1);
@@ -933,7 +932,7 @@ impl App {
                 }
             }
             (GameState::Playing, _, true)
-                if mouse_action == Some(Action::Use) && self.mouse_captured =>
+                if mouse_action == Some(Action::Use) && self.input_ctrl.mouse_captured =>
             {
                 self.use_held = true;
                 self.use_presses_pending = self.use_presses_pending.saturating_add(1);
@@ -956,7 +955,7 @@ impl App {
         let Some(renderer) = self.renderer.as_mut() else {
             return false;
         };
-        if renderer.state.creative_tab == crate::render::hud::inventory::CREATIVE_TAB_INVENTORY {
+        if renderer.state.inventory.creative_tab() == crate::render::hud::inventory::CREATIVE_TAB_INVENTORY {
             return false;
         }
 
@@ -973,14 +972,14 @@ impl App {
         let scrollbar = crate::render::hud::inventory::creative_scrollbar_geometry(
             size.width as f32,
             size.height as f32,
-            renderer.state.gui_scale.max(1) as f32,
+            renderer.state.settings.gui_scale().max(1) as f32,
         );
-        if !scrollbar.contains(self.mouse_x as f32, self.mouse_y as f32) {
+        if !scrollbar.contains(self.input_ctrl.mouse_x as f32, self.input_ctrl.mouse_y as f32) {
             return false;
         }
 
         self.creative_scroll_dragging = true;
-        renderer.state.creative_scroll = scrollbar.scroll_for_mouse_y(self.mouse_y as f32);
+        renderer.state.inventory.set_creative_scroll(scrollbar.scroll_for_mouse_y(self.input_ctrl.mouse_y as f32));
         true
     }
 
@@ -1008,9 +1007,9 @@ impl App {
         let scrollbar = crate::render::hud::inventory::creative_scrollbar_geometry(
             size.width as f32,
             size.height as f32,
-            renderer.state.gui_scale.max(1) as f32,
+            renderer.state.settings.gui_scale().max(1) as f32,
         );
-        renderer.state.creative_scroll = scrollbar.scroll_for_mouse_y(self.mouse_y as f32);
+        renderer.state.inventory.set_creative_scroll(scrollbar.scroll_for_mouse_y(self.input_ctrl.mouse_y as f32));
     }
 
     fn handle_server_editor_key(&mut self, code: KeyCode, text: Option<&str>) {
@@ -1067,10 +1066,10 @@ impl App {
         let visible_rows = ((window_height - 96.0 * scale).max(36.0 * scale) / (36.0 * scale))
             .floor()
             .max(1.0) as usize;
-        if self.selected_server < renderer.state.server_list_scroll {
-            renderer.state.server_list_scroll = self.selected_server;
-        } else if self.selected_server >= renderer.state.server_list_scroll + visible_rows {
-            renderer.state.server_list_scroll = self.selected_server + 1 - visible_rows;
+        if self.selected_server < renderer.state.server_list.server_list_scroll() {
+            renderer.state.server_list.set_server_list_scroll(self.selected_server);
+        } else if self.selected_server >= renderer.state.server_list.server_list_scroll() + visible_rows {
+            renderer.state.server_list.set_server_list_scroll(self.selected_server + 1 - visible_rows);
         }
     }
 
@@ -1081,7 +1080,7 @@ impl App {
         self.chat_open = true;
         self.chat_input.clear();
         self.chat_input.push_str(prefix);
-        self.mouse_captured = false;
+        self.input_ctrl.mouse_captured = false;
         self.set_cursor_captured(false);
         if let Some(window) = &self.window {
             window.set_ime_allowed(true);
@@ -1094,7 +1093,7 @@ impl App {
         self.chat_history_index = None;
         self.chat_draft = None;
         if recapture && matches!(self.state, GameState::Playing) {
-            self.mouse_captured = true;
+            self.input_ctrl.mouse_captured = true;
             self.set_cursor_captured(true);
         }
         if let Some(window) = &self.window {
@@ -1106,17 +1105,17 @@ impl App {
         let hit = self
             .renderer
             .as_ref()
-            .and_then(|renderer| renderer.gui_hit_test(self.mouse_x as f32, self.mouse_y as f32));
+            .and_then(|renderer| renderer.gui_hit_test(self.input_ctrl.mouse_x as f32, self.input_ctrl.mouse_y as f32));
         let Some(renderer) = &mut self.renderer else {
             return;
         };
-        let max_scroll = renderer.state.chat_lines.len().saturating_sub(15);
+        let max_scroll = renderer.state.hud.chat_lines().len().saturating_sub(15);
         match hit {
             Some(crate::ui::button_ids::CHAT_SCROLL_UP) => {
-                renderer.state.chat_scroll = (renderer.state.chat_scroll + 1).min(max_scroll);
+                renderer.state.hud.set_chat_scroll((renderer.state.hud.chat_scroll() + 1).min(max_scroll));
             }
             Some(crate::ui::button_ids::CHAT_SCROLL_DOWN) => {
-                renderer.state.chat_scroll = renderer.state.chat_scroll.saturating_sub(1);
+                renderer.state.hud.set_chat_scroll(renderer.state.hud.chat_scroll().saturating_sub(1));
             }
             _ => {}
         }
@@ -1142,7 +1141,7 @@ impl App {
                     }
                 }
                 if let Some(renderer) = &mut self.renderer {
-                    renderer.state.chat_scroll = 0;
+                    renderer.state.hud.set_chat_scroll(0);
                 }
                 self.close_chat(true);
             }
@@ -1185,15 +1184,15 @@ impl App {
             }
             KeyCode::PageUp => {
                 if let Some(renderer) = &mut self.renderer {
-                    let total = renderer.state.chat_lines.len();
+                    let total = renderer.state.hud.chat_lines().len();
                     let max_visible = 15;
                     let max_scroll = total.saturating_sub(max_visible);
-                    renderer.state.chat_scroll = (renderer.state.chat_scroll + 10).min(max_scroll);
+                    renderer.state.hud.set_chat_scroll((renderer.state.hud.chat_scroll() + 10).min(max_scroll));
                 }
             }
             KeyCode::PageDown => {
                 if let Some(renderer) = &mut self.renderer {
-                    renderer.state.chat_scroll = renderer.state.chat_scroll.saturating_sub(10);
+                    renderer.state.hud.set_chat_scroll(renderer.state.hud.chat_scroll().saturating_sub(10));
                 }
             }
             KeyCode::KeyV if ctrl => {
@@ -1270,7 +1269,7 @@ impl App {
         let Some(packet) = hooked.packet else {
             return;
         };
-        if let Err(error) = client::network::send_dynamic_packet(&self.connection, &packet) {
+        if let Err(error) = client::network::send_dynamic_packet(&self.net_ctrl.connection, &packet) {
             self.session
                 .push_system_line(format!("Lua packet validation failed: {error}"));
         }
@@ -1280,7 +1279,7 @@ impl App {
         match code {
             KeyCode::Escape => {
                 self.session.sign_editor = None;
-                self.mouse_captured = true;
+                self.input_ctrl.mouse_captured = true;
                 self.set_cursor_captured(true);
                 if let Some(window) = &self.window {
                     window.set_ime_allowed(false);
@@ -1346,8 +1345,8 @@ impl App {
             editor.lines[2].as_str(),
             editor.lines[3].as_str(),
         ];
-        client::network::send_update_sign(&self.connection, editor.pos, lines);
-        self.mouse_captured = true;
+        client::network::send_update_sign(&self.net_ctrl.connection, editor.pos, lines);
+        self.input_ctrl.mouse_captured = true;
         self.set_cursor_captured(true);
     }
 
@@ -1375,7 +1374,7 @@ impl App {
         if self.chat_input.trim().is_empty() {
             return;
         }
-        client::network::send_tab_complete(&self.connection, &self.chat_input, None);
+        client::network::send_tab_complete(&self.net_ctrl.connection, &self.chat_input, None);
     }
 
     fn append_chat_text(&mut self, text: &str) {

@@ -350,10 +350,10 @@ fn retain_spawned_player_profiles(
             .iter()
             .find(|property| property.name == "textures")
             .map(|property| property.value.clone());
-        for entity in entities
-            .entities
-            .values_mut()
-            .filter(|entity| entity.uuid.as_deref() == Some(player.uuid.as_str()))
+        for (_, mut entity) in entities
+            .iter_mut()
+            .into_iter()
+            .filter(|(_, entity)| entity.uuid.as_deref() == Some(player.uuid.as_str()))
         {
             let crate::entity::EntityData::Player {
                 name,

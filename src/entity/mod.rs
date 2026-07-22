@@ -1,7 +1,8 @@
-//! Entity system — MC 1.8.9 entity definitions and ECS-like storage.
+//! Entity system — MC 1.8.9 entity definitions and real hecs multi-component storage.
 //!
-//! Entities are stored in a flat Vec with an ID-based lookup.
-//! Each entity has position, velocity, rotation, bounding box, and type-specific data.
+//! Protocol entities live in a `hecs::World` as sparse components (Position, Velocity,
+//! Rotation, …). `Entity` is an owned DTO used for construction, network mutation
+//! writeback, and tests — it is never stored as a monocomponent in the World.
 
 pub mod types;
 
@@ -10,6 +11,8 @@ use crate::net::packet::EntityProperty;
 use crate::net::slot::Slot;
 use crate::util::wrap_degrees;
 use nalgebra::{Point3, Vector3};
+use std::collections::HashMap;
+use std::ops::{Deref, DerefMut};
 
 /// Unique entity ID (assigned by server).
 pub type EntityId = i32;
@@ -301,6 +304,141 @@ impl EntityType {
     }
 }
 
+// ============================================================================
+// ECS Components (hecs 0.11)
+//
+// hecs::Component is auto-implemented for all 'static + Send + Sync types.
+// These components are the real World storage. `Entity` is only a DTO assembled
+// for call sites and tests — never inserted as a monocomponent.
+// ============================================================================
+
+/// Protocol entity id stored on the hecs entity (mirrors `id_map` key).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProtocolId(pub EntityId);
+
+/// Optional profile UUID for remote players / named entities.
+#[derive(Clone, Debug, Default)]
+pub struct Identity {
+    pub uuid: Option<String>,
+}
+
+/// World-space position caches (current, previous, render, chasing).
+#[derive(Clone, Debug)]
+pub struct Position {
+    pub current: Point3<f32>,
+    pub prev: Point3<f32>,
+    pub render: Point3<f32>,
+    pub chasing: Point3<f32>,
+    pub prev_chasing: Point3<f32>,
+    pub render_chasing: Point3<f32>,
+}
+
+/// Per-tick velocity in blocks/second.
+#[derive(Clone, Debug)]
+pub struct Velocity(pub Vector3<f32>);
+
+/// Rotation angles in degrees.
+#[derive(Clone, Copy, Debug)]
+pub struct Rotation {
+    pub yaw: f32,
+    pub body_yaw: f32,
+    pub pitch: f32,
+    pub head_yaw: f32,
+}
+
+/// Remote packet interpolation targets and remaining steps.
+#[derive(Clone, Debug)]
+pub struct Interpolation {
+    pub target_position: Point3<f32>,
+    pub target_yaw: f32,
+    pub target_pitch: f32,
+    pub lerp_steps: u8,
+}
+
+/// Dense boolean / counter flags.
+#[derive(Clone, Copy, Debug)]
+pub struct Flags {
+    pub on_ground: bool,
+    pub using_item: bool,
+    pub skin_parts: u8,
+    pub ticks_alive: u32,
+}
+
+/// Visual timers and limb animation state.
+#[derive(Clone, Debug)]
+pub struct Animation {
+    pub hurt_time: f32,
+    pub death_time: f32,
+    pub swing_time: f32,
+    pub critical_time: f32,
+    pub limb_swing: f32,
+    pub limb_swing_amount: f32,
+    pub distance_walked_modified: f32,
+    pub prev_distance_walked_modified: f32,
+    pub camera_yaw: f32,
+    pub prev_camera_yaw: f32,
+    pub last_status: Option<i8>,
+    pub hover_start: f32,
+    #[cfg(not(feature = "anti-cheat"))]
+    pub attack_pending_time: f32,
+    #[cfg(not(feature = "anti-cheat"))]
+    pub boat_is_empty: bool,
+}
+
+/// Riding / leash attachments.
+#[derive(Clone, Debug, Default)]
+pub struct Attachment {
+    pub vehicle_id: Option<EntityId>,
+    pub leash_holder: Option<EntityId>,
+}
+
+/// Equipment slots: [main_hand, boots, leggings, chestplate, helmet] + held item id.
+#[derive(Clone, Debug)]
+pub struct Equipment {
+    pub slots: [Option<Slot>; 5],
+    pub current_item: Option<i16>,
+}
+
+/// Server-sent metadata entries.
+#[derive(Clone, Debug)]
+pub struct Metadata(pub Vec<EntityMetadata>);
+
+/// Visual state derived from metadata (zombie type, horse variant, etc.).
+#[derive(Clone, Copy, Debug)]
+pub struct VisualState(pub EntityVisualState);
+
+/// Active potion effects.
+#[derive(Clone, Debug)]
+pub struct ActiveEffects(pub Vec<EntityEffectState>);
+
+/// Attribute snapshot from S20 EntityProperties.
+#[derive(Clone, Debug)]
+pub struct Attributes(pub HashMap<String, EntityAttribute>);
+
+/// Marker component identifying the local player's entity in the hecs::World.
+///
+/// The Player data itself continues to be owned by `App::player` for now
+/// (Task 9). The marker is the first step of the migration onto the ECS World.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LocalPlayer;
+
+// EntityType (defined above) doubles as a component.
+// EntityData (defined below) doubles as a data component.
+
+/// Anti-cheat reconciliation state, gated by the `anti-cheat` cargo feature.
+#[cfg(feature = "anti-cheat")]
+#[derive(Clone, Debug, Default)]
+pub struct AntiCheatState {
+    /// Suppresses a repeated C02 attack until the server confirms the prior one.
+    pub attack_pending_time: f32,
+    /// EntityBoat.isBoatEmpty — switches the vanilla interpolation path.
+    pub boat_is_empty: bool,
+    /// Packet interpolation increment count (also mirrored on Interpolation).
+    pub lerp_steps: u8,
+    /// Item hover animation phase seed (also mirrored on Animation).
+    pub hover_start: f32,
+}
+
 /// A single entity instance.
 #[derive(Clone, Debug)]
 pub struct Entity {
@@ -316,9 +454,9 @@ pub struct Entity {
     target_position: Point3<f32>,
     target_yaw: f32,
     target_pitch: f32,
+    #[cfg(not(feature = "anti-cheat"))]
     lerp_steps: u8,
-    /// EntityBoat.isBoatEmpty. NetHandlerPlayClient switches this when the
-    /// local player mounts/dismounts, changing the vanilla interpolation path.
+    #[cfg(not(feature = "anti-cheat"))]
     boat_is_empty: bool,
     pub velocity: Vector3<f32>,
     pub yaw: f32,
@@ -327,9 +465,9 @@ pub struct Entity {
     pub head_yaw: f32,
     pub skin_parts: u8,
     pub on_ground: bool,
-    /// Entity flag 4 (`Entity.isEating`), also set while a player blocks.
     pub using_item: bool,
     pub ticks_alive: u32,
+    #[cfg(not(feature = "anti-cheat"))]
     pub hover_start: f32,
     pub current_item: Option<i16>,
     pub equipment: [Option<Slot>; 5],
@@ -337,14 +475,11 @@ pub struct Entity {
     pub last_status: Option<i8>,
     pub hurt_time: f32,
     pub death_time: f32,
-    /// Suppresses another C02 attack on this target until the server confirms
-    /// the preceding one. This closes the kill/despawn packet race.
+    #[cfg(not(feature = "anti-cheat"))]
     attack_pending_time: f32,
     pub swing_time: f32,
     pub critical_time: f32,
-    /// Cumulative walk phase (radians-ish, advanced by distance traveled).
     pub limb_swing: f32,
-    /// Walk speed (0..1), scales limb swing amplitude.
     pub limb_swing_amount: f32,
     pub distance_walked_modified: f32,
     pub prev_distance_walked_modified: f32,
@@ -355,8 +490,9 @@ pub struct Entity {
     pub active_effects: Vec<EntityEffectState>,
     pub attributes: HashMap<String, EntityAttribute>,
     pub visual: EntityVisualState,
-    // Entity-specific data
     pub data: EntityData,
+    #[cfg(feature = "anti-cheat")]
+    pub anti_cheat: AntiCheatState,
 }
 
 #[derive(Clone, Debug)]
@@ -484,7 +620,9 @@ impl Entity {
             target_position: position,
             target_yaw: 0.0,
             target_pitch: 0.0,
+            #[cfg(not(feature = "anti-cheat"))]
             lerp_steps: 0,
+            #[cfg(not(feature = "anti-cheat"))]
             boat_is_empty: true,
             velocity: Vector3::zeros(),
             yaw: 0.0,
@@ -495,6 +633,7 @@ impl Entity {
             on_ground: false,
             using_item: false,
             ticks_alive: 0,
+            #[cfg(not(feature = "anti-cheat"))]
             hover_start: (rand_float(position.x * 13.37 + position.z * 7.31)
                 * 2.0
                 * std::f32::consts::PI),
@@ -504,6 +643,7 @@ impl Entity {
             last_status: None,
             hurt_time: 0.0,
             death_time: 0.0,
+            #[cfg(not(feature = "anti-cheat"))]
             attack_pending_time: 0.0,
             swing_time: 0.0,
             critical_time: 0.0,
@@ -527,6 +667,15 @@ impl Entity {
             } else {
                 EntityData::None
             },
+            #[cfg(feature = "anti-cheat")]
+            anti_cheat: AntiCheatState {
+                attack_pending_time: 0.0,
+                boat_is_empty: true,
+                lerp_steps: 0,
+                hover_start: rand_float(position.x * 13.37 + position.z * 7.31)
+                    * 2.0
+                    * std::f32::consts::PI,
+            },
         }
     }
 
@@ -539,30 +688,117 @@ impl Entity {
         }
     }
 
+    // ------------------------------------------------------------------------
+    // Anti-cheat field accessors.
+    //
+    // These four fields move into the AntiCheatState component when the
+    // `anti-cheat` cargo feature is enabled, and live directly on Entity
+    // otherwise. The accessors keep the rest of the impl feature-agnostic.
+    // ------------------------------------------------------------------------
+
+    fn lerp_steps(&self) -> u8 {
+        #[cfg(feature = "anti-cheat")]
+        {
+            self.anti_cheat.lerp_steps
+        }
+        #[cfg(not(feature = "anti-cheat"))]
+        {
+            self.lerp_steps
+        }
+    }
+
+    fn set_lerp_steps(&mut self, steps: u8) {
+        #[cfg(feature = "anti-cheat")]
+        {
+            self.anti_cheat.lerp_steps = steps;
+        }
+        #[cfg(not(feature = "anti-cheat"))]
+        {
+            self.lerp_steps = steps;
+        }
+    }
+
+    fn boat_is_empty(&self) -> bool {
+        #[cfg(feature = "anti-cheat")]
+        {
+            self.anti_cheat.boat_is_empty
+        }
+        #[cfg(not(feature = "anti-cheat"))]
+        {
+            self.boat_is_empty
+        }
+    }
+
+    fn set_boat_is_empty(&mut self, empty: bool) {
+        #[cfg(feature = "anti-cheat")]
+        {
+            self.anti_cheat.boat_is_empty = empty;
+        }
+        #[cfg(not(feature = "anti-cheat"))]
+        {
+            self.boat_is_empty = empty;
+        }
+    }
+
+    fn attack_pending_time(&self) -> f32 {
+        #[cfg(feature = "anti-cheat")]
+        {
+            self.anti_cheat.attack_pending_time
+        }
+        #[cfg(not(feature = "anti-cheat"))]
+        {
+            self.attack_pending_time
+        }
+    }
+
+    fn set_attack_pending_time(&mut self, time: f32) {
+        #[cfg(feature = "anti-cheat")]
+        {
+            self.anti_cheat.attack_pending_time = time;
+        }
+        #[cfg(not(feature = "anti-cheat"))]
+        {
+            self.attack_pending_time = time;
+        }
+    }
+
+    /// Item hover animation phase seed. Lives on AntiCheatState under the
+    /// `anti-cheat` feature, directly on Entity otherwise.
+    pub fn hover_start(&self) -> f32 {
+        #[cfg(feature = "anti-cheat")]
+        {
+            self.anti_cheat.hover_start
+        }
+        #[cfg(not(feature = "anti-cheat"))]
+        {
+            self.hover_start
+        }
+    }
+
     pub fn move_relative(&mut self, dx: f32, dy: f32, dz: f32, lerp_steps: u8) -> bool {
         if self.entity_type == EntityType::Boat {
             let target = self.target_position + Vector3::new(dx, dy, dz);
-            if !self.boat_is_empty && (target - self.position).norm_squared() <= 1.0 {
+            if !self.boat_is_empty() && (target - self.position).norm_squared() <= 1.0 {
                 return false;
             }
             self.target_position = target;
-            self.lerp_steps = if self.boat_is_empty {
+            self.set_lerp_steps(if self.boat_is_empty() {
                 lerp_steps.saturating_add(5)
             } else {
                 3
-            };
+            });
             return true;
         }
         if self.is_minecart() {
             self.target_position += Vector3::new(dx, dy, dz);
-            self.lerp_steps = lerp_steps.saturating_add(2);
+            self.set_lerp_steps(lerp_steps.saturating_add(2));
             return true;
         }
         if self.uses_packet_interpolation() {
             self.target_position.x += dx;
             self.target_position.y += dy;
             self.target_position.z += dz;
-            self.lerp_steps = self.lerp_steps.max(lerp_steps);
+            self.set_lerp_steps(self.lerp_steps().max(lerp_steps));
         } else {
             self.position += Vector3::new(dx, dy, dz);
             self.target_position = self.position;
@@ -572,31 +808,31 @@ impl Entity {
 
     pub fn teleport(&mut self, position: Point3<f32>, lerp_steps: u8) -> bool {
         if self.entity_type == EntityType::Boat {
-            if !self.boat_is_empty && (position - self.position).norm_squared() <= 1.0 {
+            if !self.boat_is_empty() && (position - self.position).norm_squared() <= 1.0 {
                 return false;
             }
             self.target_position = position;
-            self.lerp_steps = if self.boat_is_empty {
+            self.set_lerp_steps(if self.boat_is_empty() {
                 lerp_steps.saturating_add(5)
             } else {
                 3
-            };
+            });
             return true;
         }
         if self.is_minecart() {
             self.target_position = position;
-            self.lerp_steps = lerp_steps.saturating_add(2);
+            self.set_lerp_steps(lerp_steps.saturating_add(2));
             return true;
         }
         if self.uses_packet_interpolation() && lerp_steps != 0 {
             self.target_position = position;
-            self.lerp_steps = lerp_steps;
+            self.set_lerp_steps(lerp_steps);
         } else {
             self.position = position;
             self.prev_position = position;
             self.render_position = position;
             self.target_position = position;
-            self.lerp_steps = 0;
+            self.set_lerp_steps(0);
         }
         true
     }
@@ -609,19 +845,19 @@ impl Entity {
         if self.entity_type == EntityType::Boat {
             self.target_yaw = yaw;
             self.target_pitch = pitch;
-            self.lerp_steps = if self.boat_is_empty {
+            self.set_lerp_steps(if self.boat_is_empty() {
                 lerp_steps.saturating_add(5)
             } else {
                 3
-            };
+            });
         } else if self.is_minecart() {
             self.target_yaw = yaw;
             self.target_pitch = pitch;
-            self.lerp_steps = lerp_steps.saturating_add(2);
+            self.set_lerp_steps(lerp_steps.saturating_add(2));
         } else if self.entity_type.is_mob() || self.entity_type == EntityType::Player {
             self.target_yaw = yaw;
             self.target_pitch = pitch;
-            self.lerp_steps = self.lerp_steps.max(lerp_steps);
+            self.set_lerp_steps(self.lerp_steps().max(lerp_steps));
         } else {
             self.yaw = yaw;
             self.pitch = pitch;
@@ -632,7 +868,7 @@ impl Entity {
 
     pub fn set_boat_empty(&mut self, empty: bool) {
         if self.entity_type == EntityType::Boat {
-            self.boat_is_empty = empty;
+            self.set_boat_is_empty(empty);
         }
     }
 
@@ -867,7 +1103,7 @@ impl Entity {
                 // by a hurt packet/metadata update, so zero must keep the
                 // pending gate closed until destruction arrives.
                 if *health > 0.0 {
-                    self.attack_pending_time = 0.0;
+                    self.set_attack_pending_time(0.0);
                 }
             }
         }
@@ -907,11 +1143,11 @@ impl Entity {
         // a C02 packet is lost and the server never emits EntityStatus(2).
         // Attack validation (reach, invulnerability frames, CPS) is entirely
         // the server's responsibility — vanilla has NO client-held cooldown.
-        self.attack_pending_time = 0.05;
+        self.set_attack_pending_time(0.05);
     }
 
     pub fn attack_pending(&self) -> bool {
-        self.attack_pending_time > 0.0
+        self.attack_pending_time() > 0.0
     }
 
     pub fn apply_animation(&mut self, animation: u8) {
@@ -1026,19 +1262,19 @@ impl Entity {
         self.ticks_alive += 1;
         self.hurt_time = (self.hurt_time - dt).max(0.0);
         self.death_time = (self.death_time - dt).max(0.0);
-        self.attack_pending_time = (self.attack_pending_time - dt).max(0.0);
+        self.set_attack_pending_time((self.attack_pending_time() - dt).max(0.0));
         self.swing_time = (self.swing_time - dt).max(0.0);
         self.critical_time = (self.critical_time - dt).max(0.0);
         self.prev_position = self.position;
-        if self.lerp_steps > 0 {
-            let steps = self.lerp_steps as f32;
+        if self.lerp_steps() > 0 {
+            let steps = self.lerp_steps() as f32;
             self.position.x += (self.target_position.x - self.position.x) / steps;
             self.position.y += (self.target_position.y - self.position.y) / steps;
             self.position.z += (self.target_position.z - self.position.z) / steps;
             let yaw_delta = wrap_degrees(self.target_yaw - self.yaw);
             self.yaw += yaw_delta / steps;
             self.pitch += (self.target_pitch - self.pitch) / steps;
-            self.lerp_steps -= 1;
+            self.set_lerp_steps(self.lerp_steps() - 1);
         } else {
             let predicts_motion = self.predicts_local_motion();
             if predicts_motion && self.velocity.norm_squared() > 0.0000001 {
@@ -1168,16 +1404,27 @@ impl Entity {
             self.pitch = vy.atan2((vx * vx + vz * vz).sqrt()).to_degrees();
             self.body_yaw = self.yaw;
         } else {
-            let mut desired_body_yaw = self.body_yaw;
-            if dx * dx + dz * dz > 0.0025000002 {
+            // Vanilla EntityLivingBase.renderYawOffset lags the facing yaw.
+            // While walking, pull toward movement direction; while idle, servers
+            // often only send EntityHeadLook — use head_yaw so the torso turns.
+            let stationary = dx * dx + dz * dz <= 0.0025000002;
+            let living = self.entity_type.is_mob() || self.entity_type == EntityType::Player;
+            let facing_yaw = if stationary && living {
+                self.head_yaw
+            } else {
+                self.yaw
+            };
+
+            let mut desired_body_yaw = facing_yaw;
+            if !stationary {
                 desired_body_yaw = dz.atan2(dx).to_degrees() - 90.0;
             }
             if self.swing_time > 0.0 {
-                desired_body_yaw = self.yaw;
+                desired_body_yaw = facing_yaw;
             }
             self.body_yaw += wrap_degrees(desired_body_yaw - self.body_yaw) * 0.3;
-            let head_delta = wrap_degrees(self.yaw - self.body_yaw).clamp(-75.0, 75.0);
-            self.body_yaw = self.yaw - head_delta;
+            let head_delta = wrap_degrees(facing_yaw - self.body_yaw).clamp(-75.0, 75.0);
+            self.body_yaw = facing_yaw - head_delta;
             if head_delta * head_delta > 2500.0 {
                 self.body_yaw += head_delta * 0.2;
             }
@@ -1305,17 +1552,411 @@ fn drag_f32(drag: f32, tick_fraction: f32) -> f32 {
     drag.powf(tick_fraction)
 }
 
-/// Entity manager — stores all active entities.
-pub struct EntityManager {
-    pub entities: HashMap<EntityId, Entity>,
+// ============================================================================
+// EntityMut — writeback guard
+// ============================================================================
+
+/// Mutable guard returned by [`EntityManager::get_mut`].
+///
+/// Derefs to `&mut Entity`.  On drop, writes every field of the Entity DTO
+/// back into the individual hecs components.  While alive it borrows the
+/// EntityManager mutably, preventing conflicting spawns / despawns / queries.
+pub struct EntityMut<'a> {
+    entity: Entity,
+    world: &'a hecs::World,
+    handle: hecs::Entity,
 }
 
-use std::collections::HashMap;
+impl<'a> Deref for EntityMut<'a> {
+    type Target = Entity;
+    #[inline]
+    fn deref(&self) -> &Entity {
+        &self.entity
+    }
+}
+
+impl<'a> DerefMut for EntityMut<'a> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Entity {
+        &mut self.entity
+    }
+}
+
+impl<'a> Drop for EntityMut<'a> {
+    fn drop(&mut self) {
+        // Write back from Entity DTO into individual components.
+        if let Ok(mut pos) = self.world.get::<&mut Position>(self.handle) {
+            pos.current = self.entity.position;
+            pos.prev = self.entity.prev_position;
+            pos.render = self.entity.render_position;
+            pos.chasing = self.entity.chasing_position;
+            pos.prev_chasing = self.entity.prev_chasing_position;
+            pos.render_chasing = self.entity.render_chasing_position;
+        }
+        if let Ok(mut vel) = self.world.get::<&mut Velocity>(self.handle) {
+            vel.0 = self.entity.velocity;
+        }
+        if let Ok(mut rot) = self.world.get::<&mut Rotation>(self.handle) {
+            rot.yaw = self.entity.yaw;
+            rot.body_yaw = self.entity.body_yaw;
+            rot.pitch = self.entity.pitch;
+            rot.head_yaw = self.entity.head_yaw;
+        }
+        if let Ok(mut interp) = self.world.get::<&mut Interpolation>(self.handle) {
+            interp.target_position = self.entity.target_position;
+            interp.target_yaw = self.entity.target_yaw;
+            interp.target_pitch = self.entity.target_pitch;
+        }
+        if let Ok(mut flags) = self.world.get::<&mut Flags>(self.handle) {
+            flags.on_ground = self.entity.on_ground;
+            flags.using_item = self.entity.using_item;
+            flags.skin_parts = self.entity.skin_parts;
+            flags.ticks_alive = self.entity.ticks_alive;
+        }
+        if let Ok(mut anim) = self.world.get::<&mut Animation>(self.handle) {
+            anim.hurt_time = self.entity.hurt_time;
+            anim.death_time = self.entity.death_time;
+            anim.swing_time = self.entity.swing_time;
+            anim.critical_time = self.entity.critical_time;
+            anim.limb_swing = self.entity.limb_swing;
+            anim.limb_swing_amount = self.entity.limb_swing_amount;
+            anim.distance_walked_modified = self.entity.distance_walked_modified;
+            anim.prev_distance_walked_modified = self.entity.prev_distance_walked_modified;
+            anim.camera_yaw = self.entity.camera_yaw;
+            anim.prev_camera_yaw = self.entity.prev_camera_yaw;
+            anim.last_status = self.entity.last_status;
+            anim.hover_start = self.entity.hover_start();
+            #[cfg(not(feature = "anti-cheat"))]
+            {
+                anim.attack_pending_time = self.entity.attack_pending_time;
+                anim.boat_is_empty = self.entity.boat_is_empty;
+            }
+        }
+        #[cfg(feature = "anti-cheat")]
+        if let Ok(mut ac) = self.world.get::<&mut AntiCheatState>(self.handle) {
+            ac.attack_pending_time = self.entity.anti_cheat.attack_pending_time;
+            ac.boat_is_empty = self.entity.anti_cheat.boat_is_empty;
+            ac.lerp_steps = self.entity.anti_cheat.lerp_steps;
+            ac.hover_start = self.entity.anti_cheat.hover_start;
+        }
+        if let Ok(mut attach) = self.world.get::<&mut Attachment>(self.handle) {
+            attach.vehicle_id = self.entity.vehicle_id;
+            attach.leash_holder = self.entity.leash_holder;
+        }
+        if let Ok(mut equip) = self.world.get::<&mut Equipment>(self.handle) {
+            equip.slots = self.entity.equipment.clone();
+            equip.current_item = self.entity.current_item;
+        }
+        if let Ok(mut md) = self.world.get::<&mut Metadata>(self.handle) {
+            md.0 = self.entity.metadata.clone();
+        }
+        if let Ok(mut vs) = self.world.get::<&mut VisualState>(self.handle) {
+            vs.0 = self.entity.visual;
+        }
+        if let Ok(mut eff) = self.world.get::<&mut ActiveEffects>(self.handle) {
+            eff.0 = self.entity.active_effects.clone();
+        }
+        if let Ok(mut attr) = self.world.get::<&mut Attributes>(self.handle) {
+            attr.0 = self.entity.attributes.clone();
+        }
+        if let Ok(mut data) = self.world.get::<&mut EntityData>(self.handle) {
+            *data = self.entity.data.clone();
+        }
+    }
+}
+
+/// Entity manager — stores all active entities in a hecs::World keyed by
+/// protocol EntityId.  Components are stored individually (Position, Velocity,
+/// Rotation, …) and `Entity` is an owned DTO assembled on-the-fly for callers.
+pub struct EntityManager {
+    world: hecs::World,
+    id_map: HashMap<EntityId, hecs::Entity>,
+    /// hecs handle of the LocalPlayer marker entity. Kept outside `id_map`
+    /// because the local player has no protocol EntityId of its own (the
+    /// server only ever assigns ids to remote entities). Other systems
+    /// discover the local player by querying `&LocalPlayer` on this handle.
+    local_player_entity: Option<hecs::Entity>,
+}
 
 impl EntityManager {
     pub fn new() -> Self {
         EntityManager {
-            entities: HashMap::new(),
+            world: hecs::World::new(),
+            id_map: HashMap::new(),
+            local_player_entity: None,
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Internal helpers
+    // ------------------------------------------------------------------
+
+    /// Reconstruct an owned [`Entity`] DTO from the individual components
+    /// stored on the hecs entity identified by `handle`.
+    fn assemble_entity(&self, handle: hecs::Entity) -> Option<Entity> {
+        let protocol_id = self.world.get::<&ProtocolId>(handle).ok()?;
+        let entity_type = *self.world.get::<&EntityType>(handle).ok()?;
+        let identity = self.world.get::<&Identity>(handle).ok()?;
+        let pos = self.world.get::<&Position>(handle).ok()?;
+        let vel = self.world.get::<&Velocity>(handle).ok()?;
+        let rot = self.world.get::<&Rotation>(handle).ok()?;
+        let interp = self.world.get::<&Interpolation>(handle).ok()?;
+        let flags = self.world.get::<&Flags>(handle).ok()?;
+        let anim = self.world.get::<&Animation>(handle).ok()?;
+        let attach = self.world.get::<&Attachment>(handle).ok()?;
+        let equip = self.world.get::<&Equipment>(handle).ok()?;
+        let metadata = self.world.get::<&Metadata>(handle).ok()?;
+        let visual_state = self.world.get::<&VisualState>(handle).ok()?;
+        let eff = self.world.get::<&ActiveEffects>(handle).ok()?;
+        let attrs = self.world.get::<&Attributes>(handle).ok()?;
+        let data = self.world.get::<&EntityData>(handle).ok()?;
+
+        #[cfg(feature = "anti-cheat")]
+        let ac = self.world.get::<&AntiCheatState>(handle).ok()?;
+
+        Some(Entity {
+            entity_id: protocol_id.0,
+            entity_type,
+            uuid: identity.uuid.clone(),
+            position: pos.current,
+            prev_position: pos.prev,
+            render_position: pos.render,
+            chasing_position: pos.chasing,
+            prev_chasing_position: pos.prev_chasing,
+            render_chasing_position: pos.render_chasing,
+            target_position: interp.target_position,
+            target_yaw: interp.target_yaw,
+            target_pitch: interp.target_pitch,
+            #[cfg(not(feature = "anti-cheat"))]
+            lerp_steps: interp.lerp_steps,
+            #[cfg(not(feature = "anti-cheat"))]
+            boat_is_empty: anim.boat_is_empty,
+            velocity: vel.0,
+            yaw: rot.yaw,
+            body_yaw: rot.body_yaw,
+            pitch: rot.pitch,
+            head_yaw: rot.head_yaw,
+            skin_parts: flags.skin_parts,
+            on_ground: flags.on_ground,
+            using_item: flags.using_item,
+            ticks_alive: flags.ticks_alive,
+            #[cfg(not(feature = "anti-cheat"))]
+            hover_start: anim.hover_start,
+            current_item: equip.current_item,
+            equipment: equip.slots.clone(),
+            metadata: metadata.0.clone(),
+            last_status: anim.last_status,
+            hurt_time: anim.hurt_time,
+            death_time: anim.death_time,
+            #[cfg(not(feature = "anti-cheat"))]
+            attack_pending_time: anim.attack_pending_time,
+            swing_time: anim.swing_time,
+            critical_time: anim.critical_time,
+            limb_swing: anim.limb_swing,
+            limb_swing_amount: anim.limb_swing_amount,
+            distance_walked_modified: anim.distance_walked_modified,
+            prev_distance_walked_modified: anim.prev_distance_walked_modified,
+            camera_yaw: anim.camera_yaw,
+            prev_camera_yaw: anim.prev_camera_yaw,
+            vehicle_id: attach.vehicle_id,
+            leash_holder: attach.leash_holder,
+            active_effects: eff.0.clone(),
+            attributes: attrs.0.clone(),
+            visual: visual_state.0,
+            data: EntityData::clone(&*data),
+            #[cfg(feature = "anti-cheat")]
+            anti_cheat: AntiCheatState::clone(&*ac),
+        })
+    }
+
+    /// Decompose an [`Entity`] DTO into individual components and spawn them
+    /// into the world. Used by [`spawn`] after all stale-predicate checks.
+    ///
+    /// hecs 0.11 supports at most 15-element bundles in a single `spawn` call,
+    /// so we spawn the bulk (15 components) and insert the 16th (EntityData)
+    /// separately.
+    fn spawn_components(&mut self, entity: Entity) -> hecs::Entity {
+        let e = self.world.spawn((
+            ProtocolId(entity.entity_id),
+            entity.entity_type,
+            Identity { uuid: entity.uuid.clone() },
+            Position {
+                current: entity.position,
+                prev: entity.prev_position,
+                render: entity.render_position,
+                chasing: entity.chasing_position,
+                prev_chasing: entity.prev_chasing_position,
+                render_chasing: entity.render_chasing_position,
+            },
+            Velocity(entity.velocity),
+            Rotation {
+                yaw: entity.yaw,
+                body_yaw: entity.body_yaw,
+                pitch: entity.pitch,
+                head_yaw: entity.head_yaw,
+            },
+            Interpolation {
+                target_position: entity.target_position,
+                target_yaw: entity.target_yaw,
+                target_pitch: entity.target_pitch,
+                lerp_steps: entity.lerp_steps(),
+            },
+            Flags {
+                on_ground: entity.on_ground,
+                using_item: entity.using_item,
+                skin_parts: entity.skin_parts,
+                ticks_alive: entity.ticks_alive,
+            },
+            Animation {
+                hurt_time: entity.hurt_time,
+                death_time: entity.death_time,
+                swing_time: entity.swing_time,
+                critical_time: entity.critical_time,
+                limb_swing: entity.limb_swing,
+                limb_swing_amount: entity.limb_swing_amount,
+                distance_walked_modified: entity.distance_walked_modified,
+                prev_distance_walked_modified: entity.prev_distance_walked_modified,
+                camera_yaw: entity.camera_yaw,
+                prev_camera_yaw: entity.prev_camera_yaw,
+                last_status: entity.last_status,
+                hover_start: entity.hover_start(),
+                #[cfg(not(feature = "anti-cheat"))]
+                attack_pending_time: entity.attack_pending_time,
+                #[cfg(not(feature = "anti-cheat"))]
+                boat_is_empty: entity.boat_is_empty,
+            },
+            Attachment {
+                vehicle_id: entity.vehicle_id,
+                leash_holder: entity.leash_holder,
+            },
+            Equipment {
+                slots: entity.equipment,
+                current_item: entity.current_item,
+            },
+            Metadata(entity.metadata),
+        ));
+        // Insert remaining components that would exceed the 15-element limit.
+        let _ = self.world.insert(e, (VisualState(entity.visual),));
+        let _ = self.world.insert(e, (ActiveEffects(entity.active_effects),));
+        let _ = self.world.insert(e, (Attributes(entity.attributes),));
+        let _ = self.world.insert(e, (entity.data,));
+        #[cfg(feature = "anti-cheat")]
+        let _ = self.world.insert(e, (entity.anti_cheat,));
+        e
+    }
+
+    /// Write the contents of an [`Entity`] DTO back into the individual hecs
+    /// components for the entity identified by `handle`.  This duplicates the
+    /// writeback logic in [`EntityMut::drop`] but without the guard overhead,
+    /// and is used by batch operations such as [`tick_all`].
+    fn writeback_components(&self, handle: hecs::Entity, entity: &Entity) {
+        if let Ok(mut pos) = self.world.get::<&mut Position>(handle) {
+            pos.current = entity.position;
+            pos.prev = entity.prev_position;
+            pos.render = entity.render_position;
+            pos.chasing = entity.chasing_position;
+            pos.prev_chasing = entity.prev_chasing_position;
+            pos.render_chasing = entity.render_chasing_position;
+        }
+        if let Ok(mut vel) = self.world.get::<&mut Velocity>(handle) {
+            vel.0 = entity.velocity;
+        }
+        if let Ok(mut rot) = self.world.get::<&mut Rotation>(handle) {
+            rot.yaw = entity.yaw;
+            rot.body_yaw = entity.body_yaw;
+            rot.pitch = entity.pitch;
+            rot.head_yaw = entity.head_yaw;
+        }
+        if let Ok(mut interp) = self.world.get::<&mut Interpolation>(handle) {
+            interp.target_position = entity.target_position;
+            interp.target_yaw = entity.target_yaw;
+            interp.target_pitch = entity.target_pitch;
+        }
+        if let Ok(mut flags) = self.world.get::<&mut Flags>(handle) {
+            flags.on_ground = entity.on_ground;
+            flags.using_item = entity.using_item;
+            flags.skin_parts = entity.skin_parts;
+            flags.ticks_alive = entity.ticks_alive;
+        }
+        if let Ok(mut anim) = self.world.get::<&mut Animation>(handle) {
+            anim.hurt_time = entity.hurt_time;
+            anim.death_time = entity.death_time;
+            anim.swing_time = entity.swing_time;
+            anim.critical_time = entity.critical_time;
+            anim.limb_swing = entity.limb_swing;
+            anim.limb_swing_amount = entity.limb_swing_amount;
+            anim.distance_walked_modified = entity.distance_walked_modified;
+            anim.prev_distance_walked_modified = entity.prev_distance_walked_modified;
+            anim.camera_yaw = entity.camera_yaw;
+            anim.prev_camera_yaw = entity.prev_camera_yaw;
+            anim.last_status = entity.last_status;
+            anim.hover_start = entity.hover_start();
+            #[cfg(not(feature = "anti-cheat"))]
+            {
+                anim.attack_pending_time = entity.attack_pending_time;
+                anim.boat_is_empty = entity.boat_is_empty;
+            }
+        }
+        #[cfg(feature = "anti-cheat")]
+        if let Ok(mut ac) = self.world.get::<&mut AntiCheatState>(handle) {
+            ac.attack_pending_time = entity.anti_cheat.attack_pending_time;
+            ac.boat_is_empty = entity.anti_cheat.boat_is_empty;
+            ac.lerp_steps = entity.anti_cheat.lerp_steps;
+            ac.hover_start = entity.anti_cheat.hover_start;
+        }
+        if let Ok(mut attach) = self.world.get::<&mut Attachment>(handle) {
+            attach.vehicle_id = entity.vehicle_id;
+            attach.leash_holder = entity.leash_holder;
+        }
+        if let Ok(mut equip) = self.world.get::<&mut Equipment>(handle) {
+            equip.slots.clone_from(&entity.equipment);
+            equip.current_item = entity.current_item;
+        }
+        if let Ok(mut md) = self.world.get::<&mut Metadata>(handle) {
+            md.0.clone_from(&entity.metadata);
+        }
+        if let Ok(mut vs) = self.world.get::<&mut VisualState>(handle) {
+            vs.0 = entity.visual;
+        }
+        if let Ok(mut eff) = self.world.get::<&mut ActiveEffects>(handle) {
+            eff.0.clone_from(&entity.active_effects);
+        }
+        if let Ok(mut attr) = self.world.get::<&mut Attributes>(handle) {
+            attr.0.clone_from(&entity.attributes);
+        }
+        if let Ok(mut data) = self.world.get::<&mut EntityData>(handle) {
+            *data = entity.data.clone();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Public API
+    // ------------------------------------------------------------------
+
+    /// Spawn (or replace) the LocalPlayer marker entity and return its handle.
+    ///
+    /// The marker carries only the zero-sized `LocalPlayer` tag; the Player
+    /// data itself continues to be owned by `App::player` for now (Task 9).
+    /// Calling this more than once replaces the previous marker so stale
+    /// handles never linger across world reloads.
+    pub fn spawn_local_player_marker(&mut self) -> hecs::Entity {
+        if let Some(old) = self.local_player_entity.take() {
+            let _ = self.world.despawn(old);
+        }
+        let entity = self.world.spawn((LocalPlayer,));
+        self.local_player_entity = Some(entity);
+        entity
+    }
+
+    /// Returns the hecs::Entity handle of the LocalPlayer marker, if present.
+    pub fn local_player_entity(&self) -> Option<hecs::Entity> {
+        self.local_player_entity
+    }
+
+    /// Remove the LocalPlayer marker entity, if any.
+    pub fn despawn_local_player_marker(&mut self) {
+        if let Some(entity) = self.local_player_entity.take() {
+            let _ = self.world.despawn(entity);
         }
     }
 
@@ -1325,44 +1966,166 @@ impl EntityManager {
             let entity_type = entity.entity_type;
             // Replace the short-lived local prediction once its authoritative
             // spawn packet arrives from the server.
-            self.entities.retain(|id, predicted| {
-                *id >= 0
-                    || predicted.entity_type != entity_type
-                    || predicted.ticks_alive >= 40
-                    || (predicted.position - position).norm_squared() > 16.0
-            });
+            let stale: Vec<EntityId> = self
+                .id_map
+                .iter()
+                .filter(|(id, _)| **id < 0)
+                .filter_map(|(id, hecs_entity)| {
+                    let predicted = self.assemble_entity(*hecs_entity)?;
+                    let keep = predicted.entity_type != entity_type
+                        || predicted.ticks_alive >= 40
+                        || (predicted.position - position).norm_squared() > 16.0;
+                    (!keep).then_some(*id)
+                })
+                .collect();
+            for id in stale {
+                self.despawn(id);
+            }
         }
-        self.entities.insert(entity.entity_id, entity);
+        let entity_id = entity.entity_id;
+        // Replace any existing entity with the same id.
+        if let Some(old) = self.id_map.remove(&entity_id) {
+            let _ = self.world.despawn(old);
+        }
+        let hecs_entity = self.spawn_components(entity);
+        self.id_map.insert(entity_id, hecs_entity);
     }
 
     pub fn despawn(&mut self, entity_id: EntityId) {
-        self.entities.remove(&entity_id);
+        if let Some(hecs_entity) = self.id_map.remove(&entity_id) {
+            let _ = self.world.despawn(hecs_entity);
+        }
     }
 
     pub fn despawn_batch(&mut self, ids: &[EntityId]) {
         for id in ids {
-            self.entities.remove(id);
+            self.despawn(*id);
         }
     }
 
     pub fn despawn_all(&mut self) {
-        self.entities.clear();
+        self.world.clear();
+        self.id_map.clear();
+        self.local_player_entity = None;
     }
 
-    pub fn get(&self, entity_id: EntityId) -> Option<&Entity> {
-        self.entities.get(&entity_id)
+    /// Read-only access: returns an owned [`Entity`] DTO assembled from
+    /// individual components, or `None` if the entity_id is unknown.
+    pub fn get(&self, entity_id: EntityId) -> Option<Entity> {
+        let handle = *self.id_map.get(&entity_id)?;
+        self.assemble_entity(handle)
     }
 
-    pub fn get_mut(&mut self, entity_id: EntityId) -> Option<&mut Entity> {
-        self.entities.get_mut(&entity_id)
+    /// Mutable access: returns a guard that derefs to `&mut Entity`.
+    /// Changes are written back to the individual hecs components when
+    /// the guard is dropped.
+    pub fn get_mut(&mut self, entity_id: EntityId) -> Option<EntityMut<'_>> {
+        let handle = *self.id_map.get(&entity_id)?;
+        let entity = self.assemble_entity(handle)?;
+        Some(EntityMut {
+            entity,
+            world: &self.world,
+            handle,
+        })
+    }
+
+    /// Query iterator: iterate all entities matching a component query (read-only).
+    ///
+    /// Unlike [`iter`], this does NOT allocate a Vec — it streams through the
+    /// archetypes.  Use `&ProtocolId` in the query tuple if you need the
+    /// network EntityId.
+    ///
+    /// # Example
+    /// ```ignore
+    /// entities.for_each::<(&ProtocolId, &Position, &Rotation)>(|(id, pos, rot)| {
+    ///     // read-only access
+    /// });
+    /// ```
+    pub fn for_each<Q: hecs::Query>(&self, mut f: impl FnMut(Q::Item<'_>)) {
+        for items in &mut self.world.query::<Q>() {
+            f(items);
+        }
+    }
+
+    /// Query iterator: iterate all entities matching a component query (mutable).
+    ///
+    /// See [`for_each`] for usage.
+    pub fn for_each_mut<Q: hecs::Query>(&mut self, mut f: impl FnMut(Q::Item<'_>)) {
+        for items in self.world.query_mut::<Q>() {
+            f(items);
+        }
+    }
+
+    /// Resolve the protocol EntityId to the underlying hecs::Entity handle.
+    pub fn entity(&self, entity_id: EntityId) -> Option<hecs::Entity> {
+        self.id_map.get(&entity_id).copied()
+    }
+
+    /// Snapshot iterator: returns owned [`Entity`] DTOs for every tracked
+    /// entity.  Read-only, no writeback.
+    pub fn iter(&self) -> Vec<(EntityId, Entity)> {
+        self.id_map
+            .iter()
+            .filter_map(|(id, e)| {
+                self.assemble_entity(*e)
+                    .map(|entity| (*id, entity))
+            })
+            .collect()
+    }
+
+    /// Snapshot mutable iterator: returns owned [`Entity`] DTOs, each paired
+    /// with an [`EntityMut`] guard so that any mutation is written back to
+    /// the components on drop.
+    ///
+    /// **Important**: all guards share a borrow of `self.world`.  hecs'
+    /// runtime borrow checker prevents two guards from simultaneously
+    /// borrowing the *same* component on the *same* entity — but using them
+    /// on *different* entities is perfectly safe.
+    pub fn iter_mut(&mut self) -> Vec<(EntityId, EntityMut<'_>)> {
+        let entries: Vec<(EntityId, hecs::Entity)> =
+            self.id_map.iter().map(|(id, e)| (*id, *e)).collect();
+        entries
+            .into_iter()
+            .filter_map(|(id, handle)| {
+                let entity = self.assemble_entity(handle)?;
+                Some((
+                    id,
+                    EntityMut {
+                        entity,
+                        world: &self.world,
+                        handle,
+                    },
+                ))
+            })
+            .collect()
     }
 
     pub fn tick_all(&mut self, dt: f32, world: &crate::world::World) {
-        for entity in self.entities.values_mut() {
-            entity.tick_visual(dt, world);
+        // Collect handles up front so we never hold a borrow while mutating.
+        let entries: Vec<(EntityId, hecs::Entity)> =
+            self.id_map.iter().map(|(id, e)| (*id, *e)).collect();
+        for (_, handle) in &entries {
+            // Assemble DTO, call tick_visual on it, writeback.
+            if let Some(mut entity) = self.assemble_entity(*handle) {
+                entity.tick_visual(dt, world);
+                self.writeback_components(*handle, &entity);
+            }
         }
-        self.entities
-            .retain(|id, entity| *id >= 0 || entity.ticks_alive < 40);
+        // Remove expired local predictions (negative ProtocolId, >= 40 ticks old).
+        let expired: Vec<EntityId> = {
+            let mut r = Vec::new();
+            self.for_each::<(hecs::Entity, &ProtocolId, &Flags)>(
+                |(_, proto, flags)| {
+                    if proto.0 < 0 && flags.ticks_alive >= 40 {
+                        r.push(proto.0);
+                    }
+                },
+            );
+            r
+        };
+        for id in expired {
+            self.despawn(id);
+        }
     }
 
     /// Spawn entity-specific particles (mob walking, fire smoke, spell effects, etc.)
@@ -1371,248 +2134,237 @@ impl EntityManager {
         particles: &mut crate::client::particles::ParticleSystem,
         world: &crate::world::World,
     ) {
-        use crate::entity::EntityType;
-
-        for entity in self.entities.values() {
-            if entity.ticks_alive % 4 != 0 {
-                continue;
-            }
-
-            let pos = entity.position;
-            let feet_y = pos.y;
-
-            // Get the block at entity's feet
-            let block_at_feet = world.get_block(pos.x as i32, feet_y as i32, pos.z as i32);
-
-            match entity.entity_type {
-                // Mobs walking on various blocks - footstep particles
-                EntityType::Zombie
-                | EntityType::Skeleton
-                | EntityType::Spider
-                | EntityType::Creeper
-                | EntityType::Pig
-                | EntityType::Cow
-                | EntityType::Chicken
-                | EntityType::Wolf
-                | EntityType::Horse
-                | EntityType::Ocelot
-                | EntityType::Rabbit
-                | EntityType::Mooshroom
-                | EntityType::Squid
-                | EntityType::Bat => {
-                    if entity.on_ground && entity.limb_swing_amount > 0.1 {
-                        particles.spawn_footstep(
-                            nalgebra::Point3::new(pos.x, feet_y, pos.z),
-                            block_at_feet.to_id(),
-                        );
-                    }
+        self.for_each::<(&EntityType, &Position, &Flags, &Animation, &Metadata, &ActiveEffects)>(
+            |(entity_type, pos, flags, anim, metadata, effects)| {
+                if flags.ticks_alive % 4 != 0 {
+                    return;
                 }
 
-                // Sheep - walking + eating grass particles
-                EntityType::Sheep => {
-                    if entity.on_ground && entity.limb_swing_amount > 0.1 {
-                        particles.spawn_footstep(
-                            nalgebra::Point3::new(pos.x, feet_y, pos.z),
-                            block_at_feet.to_id(),
-                        );
-                    }
-                    // Check metadata for eating animation (metadata index 12, byte value != 0)
-                    let is_eating = entity.metadata.iter().any(|m| {
-                        m.index == 12
-                            && matches!(&m.value, crate::net::metadata::MetadataValue::Byte(v) if *v != 0)
-                    });
-                    if is_eating {
-                        particles.spawn_happy_villager(nalgebra::Point3::new(
-                            pos.x,
-                            pos.y + 0.8,
-                            pos.z,
-                        ));
-                    }
-                }
+                let feet_y = pos.current.y;
+                let block_at_feet = world.get_block(
+                    pos.current.x as i32,
+                    feet_y as i32,
+                    pos.current.z as i32,
+                );
 
-                // Villager - walking + occasional idle particles
-                EntityType::Villager => {
-                    if entity.on_ground && entity.limb_swing_amount > 0.1 {
-                        particles.spawn_footstep(
-                            nalgebra::Point3::new(pos.x, feet_y, pos.z),
-                            block_at_feet.to_id(),
-                        );
+                match *entity_type {
+                    EntityType::Zombie
+                    | EntityType::Skeleton
+                    | EntityType::Spider
+                    | EntityType::Creeper
+                    | EntityType::Pig
+                    | EntityType::Cow
+                    | EntityType::Chicken
+                    | EntityType::Wolf
+                    | EntityType::Horse
+                    | EntityType::Ocelot
+                    | EntityType::Rabbit
+                    | EntityType::Mooshroom
+                    | EntityType::Squid
+                    | EntityType::Bat => {
+                        if flags.on_ground && anim.limb_swing_amount > 0.1 {
+                            particles.spawn_footstep(
+                                nalgebra::Point3::new(pos.current.x, feet_y, pos.current.z),
+                                block_at_feet.to_id(),
+                            );
+                        }
                     }
-                }
-
-                // Iron Golem - walking + damage particles on swing
-                EntityType::IronGolem => {
-                    if entity.on_ground && entity.limb_swing_amount > 0.1 {
-                        particles.spawn_footstep(
-                            nalgebra::Point3::new(pos.x, feet_y, pos.z),
-                            block_at_feet.to_id(),
-                        );
-                    }
-                }
-
-                // Blaze - fire particles
-                EntityType::Blaze => {
-                    if entity.ticks_alive % 2 == 0 {
-                        particles.spawn_entity_smoke(
-                            nalgebra::Point3::new(
-                                pos.x + (pseudo(pos.x * 0.37) * 0.4 - 0.2),
-                                pos.y + 1.2 + pseudo(pos.z * 0.11) * 0.3,
-                                pos.z + (pseudo(pos.x * 0.19) * 0.4 - 0.2),
-                            ),
-                            false,
-                        );
-                    }
-                }
-
-                // Ghast - large smoke
-                EntityType::Ghast => {
-                    if entity.ticks_alive % 8 == 0 {
-                        particles.spawn_entity_smoke(
-                            nalgebra::Point3::new(pos.x, pos.y + 2.0, pos.z),
-                            true,
-                        );
-                    }
-                }
-
-                // Enderman - portal particles
-                EntityType::Enderman => {
-                    if entity.ticks_alive % 3 == 0 {
-                        let seed = entity.ticks_alive as f32;
-                        particles.spawn(crate::client::particles::Particle {
-                            kind: crate::client::particles::ParticleKind::Portal,
-                            position: nalgebra::Point3::new(
-                                pos.x + pseudo(seed) * 0.4 - 0.2,
-                                pos.y + 1.5 + pseudo(seed + 2.0) * 0.5,
-                                pos.z + pseudo(seed + 5.0) * 0.4 - 0.2,
-                            ),
-                            velocity: nalgebra::Vector3::new(0.0, 0.02, 0.0),
-                            age: 0.0,
-                            lifetime: 0.8,
-                            size: 0.06,
-                            color: [0.55, 0.18, 0.95, 0.78],
-                            rotation: 0.0,
-                            texture_jitter: [0.0, 0.0],
-                            on_ground: false,
+                    EntityType::Sheep => {
+                        if flags.on_ground && anim.limb_swing_amount > 0.1 {
+                            particles.spawn_footstep(
+                                nalgebra::Point3::new(pos.current.x, feet_y, pos.current.z),
+                                block_at_feet.to_id(),
+                            );
+                        }
+                        let is_eating = metadata.0.iter().any(|m| {
+                            m.index == 12
+                                && matches!(&m.value, crate::net::metadata::MetadataValue::Byte(v) if *v != 0)
                         });
+                        if is_eating {
+                            particles.spawn_happy_villager(nalgebra::Point3::new(
+                                pos.current.x,
+                                pos.current.y + 0.8,
+                                pos.current.z,
+                            ));
+                        }
                     }
-                }
-
-                // Witch - magic particles
-                EntityType::Witch => {
-                    if entity.ticks_alive % 6 == 0 {
-                        particles.spawn_witch_magic(nalgebra::Point3::new(
-                            pos.x,
-                            pos.y + 1.0,
-                            pos.z,
-                        ));
+                    EntityType::Villager => {
+                        if flags.on_ground && anim.limb_swing_amount > 0.1 {
+                            particles.spawn_footstep(
+                                nalgebra::Point3::new(pos.current.x, feet_y, pos.current.z),
+                                block_at_feet.to_id(),
+                            );
+                        }
                     }
-                }
-
-                // Slime / LavaSlime - slime particles + fire
-                EntityType::Slime | EntityType::LavaSlime => {
-                    if entity.on_ground && entity.limb_swing_amount > 0.1 {
-                        particles.spawn_slime(nalgebra::Point3::new(pos.x, feet_y, pos.z));
+                    EntityType::IronGolem => {
+                        if flags.on_ground && anim.limb_swing_amount > 0.1 {
+                            particles.spawn_footstep(
+                                nalgebra::Point3::new(pos.current.x, feet_y, pos.current.z),
+                                block_at_feet.to_id(),
+                            );
+                        }
                     }
-                    if entity.entity_type == EntityType::LavaSlime && entity.ticks_alive % 4 == 0 {
-                        particles.spawn(crate::client::particles::Particle {
-                            kind: crate::client::particles::ParticleKind::LavaPop,
-                            position: nalgebra::Point3::new(
-                                pos.x + pseudo(entity.ticks_alive as f32) * 0.6 - 0.3,
-                                pos.y + 0.2,
-                                pos.z + pseudo(entity.ticks_alive as f32 + 3.0) * 0.6 - 0.3,
-                            ),
-                            velocity: nalgebra::Vector3::new(0.0, 0.04, 0.0),
-                            age: 0.0,
-                            lifetime: 0.7,
-                            size: 0.06,
-                            color: [1.0, 0.35, 0.02, 0.92],
-                            rotation: 0.0,
-                            texture_jitter: [0.0, 0.0],
-                            on_ground: false,
-                        });
+                    EntityType::Blaze => {
+                        if flags.ticks_alive % 2 == 0 {
+                            particles.spawn_entity_smoke(
+                                nalgebra::Point3::new(
+                                    pos.current.x + (pseudo(pos.current.x * 0.37) * 0.4 - 0.2),
+                                    pos.current.y + 1.2 + pseudo(pos.current.z * 0.11) * 0.3,
+                                    pos.current.z + (pseudo(pos.current.x * 0.19) * 0.4 - 0.2),
+                                ),
+                                false,
+                            );
+                        }
                     }
-                }
-
-                // Snow golem - snow trail
-                EntityType::SnowMan => {
-                    if entity.on_ground && entity.limb_swing_amount > 0.1 {
-                        if entity.ticks_alive % 2 == 0 {
+                    EntityType::Ghast => {
+                        if flags.ticks_alive % 8 == 0 {
+                            particles.spawn_entity_smoke(
+                                nalgebra::Point3::new(pos.current.x, pos.current.y + 2.0, pos.current.z),
+                                true,
+                            );
+                        }
+                    }
+                    EntityType::Enderman => {
+                        if flags.ticks_alive % 3 == 0 {
+                            let seed = flags.ticks_alive as f32;
                             particles.spawn(crate::client::particles::Particle {
-                                kind: crate::client::particles::ParticleKind::SnowShovel,
+                                kind: crate::client::particles::ParticleKind::Portal,
                                 position: nalgebra::Point3::new(
-                                    pos.x + pseudo(entity.ticks_alive as f32) * 0.3 - 0.15,
-                                    feet_y + 0.01,
-                                    pos.z + pseudo(entity.ticks_alive as f32 + 3.0) * 0.3 - 0.15,
+                                    pos.current.x + pseudo(seed) * 0.4 - 0.2,
+                                    pos.current.y + 1.5 + pseudo(seed + 2.0) * 0.5,
+                                    pos.current.z + pseudo(seed + 5.0) * 0.4 - 0.2,
                                 ),
                                 velocity: nalgebra::Vector3::new(0.0, 0.02, 0.0),
                                 age: 0.0,
-                                lifetime: 0.6,
+                                lifetime: 0.8,
                                 size: 0.06,
-                                color: [0.92, 0.96, 1.0, 0.60],
+                                color: [0.55, 0.18, 0.95, 0.78],
                                 rotation: 0.0,
                                 texture_jitter: [0.0, 0.0],
                                 on_ground: false,
                             });
                         }
                     }
+                    EntityType::Witch => {
+                        if flags.ticks_alive % 6 == 0 {
+                            particles.spawn_witch_magic(nalgebra::Point3::new(
+                                pos.current.x,
+                                pos.current.y + 1.0,
+                                pos.current.z,
+                            ));
+                        }
+                    }
+                    EntityType::Slime | EntityType::LavaSlime => {
+                        if flags.on_ground && anim.limb_swing_amount > 0.1 {
+                            particles.spawn_slime(nalgebra::Point3::new(pos.current.x, feet_y, pos.current.z));
+                        }
+                        if *entity_type == EntityType::LavaSlime && flags.ticks_alive % 4 == 0 {
+                            particles.spawn(crate::client::particles::Particle {
+                                kind: crate::client::particles::ParticleKind::LavaPop,
+                                position: nalgebra::Point3::new(
+                                    pos.current.x + pseudo(flags.ticks_alive as f32) * 0.6 - 0.3,
+                                    pos.current.y + 0.2,
+                                    pos.current.z + pseudo(flags.ticks_alive as f32 + 3.0) * 0.6 - 0.3,
+                                ),
+                                velocity: nalgebra::Vector3::new(0.0, 0.04, 0.0),
+                                age: 0.0,
+                                lifetime: 0.7,
+                                size: 0.06,
+                                color: [1.0, 0.35, 0.02, 0.92],
+                                rotation: 0.0,
+                                texture_jitter: [0.0, 0.0],
+                                on_ground: false,
+                            });
+                        }
+                    }
+                    EntityType::SnowMan => {
+                        if flags.on_ground && anim.limb_swing_amount > 0.1 {
+                            if flags.ticks_alive % 2 == 0 {
+                                particles.spawn(crate::client::particles::Particle {
+                                    kind: crate::client::particles::ParticleKind::SnowShovel,
+                                    position: nalgebra::Point3::new(
+                                        pos.current.x + pseudo(flags.ticks_alive as f32) * 0.3 - 0.15,
+                                        feet_y + 0.01,
+                                        pos.current.z + pseudo(flags.ticks_alive as f32 + 3.0) * 0.3 - 0.15,
+                                    ),
+                                    velocity: nalgebra::Vector3::new(0.0, 0.02, 0.0),
+                                    age: 0.0,
+                                    lifetime: 0.6,
+                                    size: 0.06,
+                                    color: [0.92, 0.96, 1.0, 0.60],
+                                    rotation: 0.0,
+                                    texture_jitter: [0.0, 0.0],
+                                    on_ground: false,
+                                });
+                            }
+                        }
+                    }
+                    EntityType::XPOrb => {
+                        if flags.ticks_alive % 3 == 0 {
+                            let seed = flags.ticks_alive as f32;
+                            particles.spawn(crate::client::particles::Particle {
+                                kind: crate::client::particles::ParticleKind::HappyVillager,
+                                position: nalgebra::Point3::new(
+                                    pos.current.x + pseudo(seed) * 0.3 - 0.15,
+                                    pos.current.y + pseudo(seed + 2.0) * 0.3,
+                                    pos.current.z + pseudo(seed + 5.0) * 0.3 - 0.15,
+                                ),
+                                velocity: nalgebra::Vector3::new(0.0, 0.02, 0.0),
+                                age: 0.0,
+                                lifetime: 0.6,
+                                size: 0.06,
+                                color: [0.30, 0.90, 0.30, 0.80],
+                                rotation: 0.0,
+                                texture_jitter: [0.0, 0.0],
+                                on_ground: false,
+                            });
+                        }
+                    }
+                    _ => {}
                 }
 
-                // XP orbs - sparkle
-                EntityType::XPOrb => {
-                    if entity.ticks_alive % 3 == 0 {
-                        let seed = entity.ticks_alive as f32;
-                        particles.spawn(crate::client::particles::Particle {
-                            kind: crate::client::particles::ParticleKind::HappyVillager,
-                            position: nalgebra::Point3::new(
-                                pos.x + pseudo(seed) * 0.3 - 0.15,
-                                pos.y + pseudo(seed + 2.0) * 0.3,
-                                pos.z + pseudo(seed + 5.0) * 0.3 - 0.15,
-                            ),
-                            velocity: nalgebra::Vector3::new(0.0, 0.02, 0.0),
-                            age: 0.0,
-                            lifetime: 0.6,
-                            size: 0.06,
-                            color: [0.30, 0.90, 0.30, 0.80],
-                            rotation: 0.0,
-                            texture_jitter: [0.0, 0.0],
-                            on_ground: false,
-                        });
+                if !effects.0.is_empty() && flags.ticks_alive % 4 == 0 {
+                    for effect in &effects.0 {
+                        if !effect.hide_particles {
+                            let color = potion_effect_color(effect.effect_id);
+                            particles.spawn_mob_spell(
+                                nalgebra::Point3::new(pos.current.x, pos.current.y + 0.5, pos.current.z),
+                                color,
+                                effect.amplifier == 0,
+                            );
+                        }
                     }
                 }
-
-                _ => {}
-            }
-
-            // Apply potion effect particles for any entity
-            if !entity.active_effects.is_empty() && entity.ticks_alive % 4 == 0 {
-                for effect in &entity.active_effects {
-                    if !effect.hide_particles {
-                        let color = potion_effect_color(effect.effect_id);
-                        particles.spawn_mob_spell(
-                            nalgebra::Point3::new(pos.x, pos.y + 0.5, pos.z),
-                            color,
-                            effect.amplifier == 0,
-                        );
-                    }
-                }
-            }
-        }
+            },
+        );
     }
 
     pub fn update_render_positions(&mut self, alpha: f32) {
-        for entity in self.entities.values_mut() {
-            entity.update_render_position(alpha);
-        }
+        let alpha = alpha.clamp(0.0, 1.0);
+        self.for_each_mut::<(&mut Position,)>(|(pos,)| {
+            pos.render = Point3::new(
+                pos.prev.x + (pos.current.x - pos.prev.x) * alpha,
+                pos.prev.y + (pos.current.y - pos.prev.y) * alpha,
+                pos.prev.z + (pos.current.z - pos.prev.z) * alpha,
+            );
+            pos.render_chasing = Point3::new(
+                pos.prev_chasing.x + (pos.chasing.x - pos.prev_chasing.x) * alpha,
+                pos.prev_chasing.y + (pos.chasing.y - pos.prev_chasing.y) * alpha,
+                pos.prev_chasing.z + (pos.chasing.z - pos.prev_chasing.z) * alpha,
+            );
+        });
     }
 
     pub fn count(&self) -> usize {
-        self.entities.len()
+        self.id_map.len()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Entity, EntityData, EntityType};
+    use super::{
+        Animation, Entity, EntityData, EntityManager, EntityType, Position, Rotation,
+    };
     use crate::net::packet::EntityProperty;
     use crate::net::slot::Slot;
     use nalgebra::Point3;
@@ -1701,6 +2453,26 @@ mod tests {
         assert_eq!((entity.yaw, entity.pitch), (60.0, 20.0));
         entity.tick_visual(1.0 / 20.0, &world);
         assert_eq!((entity.yaw, entity.pitch), (90.0, 30.0));
+    }
+
+    #[test]
+    fn stationary_mob_body_turns_toward_head_look() {
+        let world = crate::world::World::new();
+        let mut entity = Entity::new(1, EntityType::Zombie, Point3::new(0.0, 64.0, 0.0));
+        entity.yaw = 0.0;
+        entity.body_yaw = 0.0;
+        entity.head_yaw = 90.0;
+        entity.prev_position = entity.position;
+        for _ in 0..20 {
+            entity.tick_visual(1.0 / 20.0, &world);
+        }
+        let mut d = entity.head_yaw - entity.body_yaw;
+        d = ((d + 180.0) % 360.0 + 360.0) % 360.0 - 180.0;
+        assert!(
+            d.abs() < 5.0,
+            "body_yaw should track head_yaw while idle, delta={}",
+            d.abs()
+        );
     }
 
     #[test]
@@ -1848,6 +2620,138 @@ mod tests {
         assert_eq!(entity.visual.armor_stand_flags, 0x0d);
         assert_eq!(entity.visual.armor_stand_rotations[3], [12.0, 34.0, 56.0]);
         assert_eq!(entity.visual.armor_stand_rotations[2], [-10.0, 0.0, -10.0]);
+    }
+
+    // ------------------------------------------------------------------
+    // ECS integration tests — spawn → component → writeback cycle
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn spawn_stores_components_and_get_returns_assembled_entity() {
+        let mut em = super::EntityManager::new();
+        let mut entity = Entity::new(42, EntityType::Zombie, Point3::new(10.0, 20.0, 30.0));
+        entity.yaw = 45.0;
+        entity.pitch = 30.0;
+        entity.on_ground = true;
+        em.spawn(entity);
+
+        let assembled = em.get(42).expect("entity should exist after spawn");
+        assert_eq!(assembled.entity_id, 42);
+        assert_eq!(assembled.entity_type, EntityType::Zombie);
+        assert_eq!(assembled.position, Point3::new(10.0, 20.0, 30.0));
+        assert_eq!(assembled.yaw, 45.0);
+        assert_eq!(assembled.pitch, 30.0);
+        assert!(assembled.on_ground);
+    }
+
+    #[test]
+    fn for_each_queries_matching_entities() {
+        let mut em = super::EntityManager::new();
+        let e1 = Entity::new(1, EntityType::Cow, Point3::origin());
+        let e2 = Entity::new(2, EntityType::Pig, Point3::new(5.0, 0.0, 5.0));
+        em.spawn(e1);
+        em.spawn(e2);
+
+        let mut count = 0u32;
+        em.for_each::<(&EntityType, &Position)>(|(et, pos)| {
+            count += 1;
+            if *et == EntityType::Cow {
+                assert_eq!(pos.current, Point3::origin());
+            }
+            if *et == EntityType::Pig {
+                assert_eq!(pos.current, Point3::new(5.0, 0.0, 5.0));
+            }
+        });
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn for_each_mut_writes_back_to_components() {
+        let mut em = super::EntityManager::new();
+        let mut entity = Entity::new(1, EntityType::Cow, Point3::origin());
+        entity.yaw = 90.0;
+        entity.pitch = 45.0;
+        em.spawn(entity);
+
+        em.for_each_mut::<(&mut Position, &mut Rotation)>(|(pos, rot)| {
+            pos.current.x += 100.0;
+            rot.yaw += 10.0;
+        });
+
+        let assembled = em.get(1).unwrap();
+        assert_eq!(assembled.position.x, 100.0);
+        assert_eq!(assembled.yaw, 100.0);
+        assert_eq!(assembled.pitch, 45.0);
+    }
+
+    #[test]
+    fn get_mut_guard_writes_back_on_drop() {
+        let mut em = super::EntityManager::new();
+        let mut entity = Entity::new(1, EntityType::Sheep, Point3::new(1.0, 2.0, 3.0));
+        entity.velocity = nalgebra::Vector3::new(0.5, 0.0, 0.0);
+        em.spawn(entity);
+
+        {
+            let mut guard = em.get_mut(1).unwrap();
+            guard.position.x += 10.0;
+            guard.velocity.x = 99.0;
+            guard.yaw = 180.0;
+        }
+
+        let assembled = em.get(1).unwrap();
+        assert_eq!(assembled.position.x, 11.0);
+        assert_eq!(assembled.velocity.x, 99.0);
+        assert_eq!(assembled.yaw, 180.0);
+        assert_eq!(assembled.position.y, 2.0);
+    }
+
+    #[test]
+    fn despawn_removes_entity_from_queries() {
+        let mut em = super::EntityManager::new();
+        em.spawn(Entity::new(1, EntityType::Cow, Point3::origin()));
+        em.spawn(Entity::new(2, EntityType::Pig, Point3::new(5.0, 0.0, 5.0)));
+
+        assert_eq!(em.count(), 2);
+        em.despawn(1);
+        assert_eq!(em.count(), 1);
+        assert!(em.get(1).is_none());
+        assert!(em.get(2).is_some());
+
+        let mut count = 0u32;
+        em.for_each::<(&EntityType,)>(|_| count += 1);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn for_each_mut_cfg_components_work_with_anti_cheat() {
+        let mut em = super::EntityManager::new();
+        let entity = Entity::new(1, EntityType::Creeper, Point3::origin());
+        em.spawn(entity);
+
+        em.for_each_mut::<(&mut Animation,)>(|(anim,)| {
+            anim.hurt_time = 5.0;
+            anim.swing_time = 1.5;
+        });
+
+        let assembled = em.get(1).unwrap();
+        assert_eq!(assembled.hurt_time, 5.0);
+        assert_eq!(assembled.swing_time, 1.5);
+    }
+
+    #[test]
+    fn update_render_positions_interpolates_correctly() {
+        let mut em = super::EntityManager::new();
+        let mut entity = Entity::new(1, EntityType::Cow, Point3::new(0.0, 0.0, 0.0));
+        entity.prev_position = Point3::new(-10.0, 0.0, 0.0);
+        entity.chasing_position = Point3::new(100.0, 0.0, 0.0);
+        entity.prev_chasing_position = Point3::new(0.0, 0.0, 0.0);
+        em.spawn(entity);
+
+        em.update_render_positions(0.5);
+
+        let assembled = em.get(1).unwrap();
+        assert_eq!(assembled.render_position.x, -5.0);
+        assert_eq!(assembled.render_chasing_position.x, 50.0);
     }
 }
 

@@ -108,8 +108,8 @@ impl Renderer {
                     thickness,
                     color,
                 } => {
-                    let cx = self.swapchain_extent.width as f32 * 0.5 + *x_offset;
-                    let cy = self.swapchain_extent.height as f32 * 0.5 + *y_offset;
+                    let cx = self.swapchain.swapchain_extent.width as f32 * 0.5 + *x_offset;
+                    let cy = self.swapchain.swapchain_extent.height as f32 * 0.5 + *y_offset;
                     let half_thickness = *thickness * 0.5;
                     let color = color.array();
                     font_batch.fill_rect(

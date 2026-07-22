@@ -148,29 +148,34 @@ impl Renderer {
         }
         .expect("Failed to create instance");
 
-        // Create debug messenger if validation layer is active
+        // Create debug messenger if validation layer is active.
+        // The debug_utils loader and the messenger handle are stored on the
+        // Renderer so the messenger can be explicitly destroyed in Drop instead
+        // of being leaked via mem::forget.
+        let debug_utils;
+        let debug_messenger;
         if validation_layer.is_some() {
-            let debug_utils = ash::ext::debug_utils::Instance::new(&entry, &instance);
-            unsafe {
-                let _messenger = debug_utils
-                    .create_debug_utils_messenger(
-                        &vk::DebugUtilsMessengerCreateInfoEXT {
-                            message_severity: vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
-                                | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-                                | vk::DebugUtilsMessageSeverityFlagsEXT::INFO,
-                            message_type: vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
-                                | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
-                                | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
-                            pfn_user_callback: Some(debug_callback),
-                            ..Default::default()
-                        },
-                        None,
-                    )
-                    .unwrap();
-                // Intentionally keep the debug loader alive for program lifetime.
-                let _ = _messenger;
-                std::mem::forget(debug_utils);
-            }
+            let du = ash::ext::debug_utils::Instance::new(&entry, &instance);
+            debug_messenger = unsafe {
+                du.create_debug_utils_messenger(
+                    &vk::DebugUtilsMessengerCreateInfoEXT {
+                        message_severity: vk::DebugUtilsMessageSeverityFlagsEXT::ERROR
+                            | vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
+                            | vk::DebugUtilsMessageSeverityFlagsEXT::INFO,
+                        message_type: vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
+                            | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION
+                            | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE,
+                        pfn_user_callback: Some(debug_callback),
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .unwrap()
+            };
+            debug_utils = Some(du);
+        } else {
+            debug_utils = None;
+            debug_messenger = vk::DebugUtilsMessengerEXT::null();
         }
 
         // Surface
@@ -338,7 +343,7 @@ impl Renderer {
         // Swapchain
         let swapchain_fn = ash::khr::swapchain::Device::new(&instance, &device);
         let (swapchain, swapchain_images, swapchain_views, swapchain_format, swapchain_extent) =
-            Self::create_swapchain(
+            super::swapchain::SwapchainManager::create_swapchain(
                 &surface_fn,
                 &swapchain_fn,
                 &device,
@@ -350,13 +355,14 @@ impl Renderer {
 
         // Depth
         let depth_format = vk::Format::D32_SFLOAT;
-        let (depth_images, depth_image_views, depth_allocs) = Self::create_depth_buffers(
-            &device,
-            &mut allocator,
-            depth_format,
-            swapchain_extent,
-            swapchain_views.len(),
-        );
+        let (depth_images, depth_image_views, depth_allocs) =
+            super::swapchain::SwapchainManager::create_depth_buffers(
+                &device,
+                &mut allocator,
+                depth_format,
+                swapchain_extent,
+                swapchain_views.len(),
+            );
 
         // Render pass & pipeline
         let render_pass = Self::create_render_pass(&device, swapchain_format, depth_format);
@@ -416,7 +422,7 @@ impl Renderer {
         .unwrap();
 
         // Framebuffers
-        let framebuffers = Self::create_framebuffers(
+        let framebuffers = super::swapchain::SwapchainManager::create_framebuffers(
             &device,
             render_pass,
             &swapchain_views,
@@ -437,19 +443,27 @@ impl Renderer {
 
         // Sync
         let (image_available, render_finished, in_flight_fences) =
-            Self::create_sync_objects(&device);
+            super::swapchain::SwapchainManager::create_sync_objects(&device);
 
         // Uniforms
         let (uniform_buffers, uniform_allocs, uniform_mapped) =
-            Self::create_uniform_buffers(&device, &mut allocator);
+            super::resource_manager::ResourceManager::create_uniform_buffers(&device, &mut allocator);
 
         // Descriptors
         let (descriptor_pool, descriptor_sets) =
             Self::create_descriptors(&device, descriptor_layout, &uniform_buffers);
 
         // Texture atlas
-        let (texture_image, texture_image_view, texture_alloc, texture_sampler, block_atlas) =
-            Self::create_texture_atlas(&device, &mut allocator, command_pool, queue, resolver);
+        let (
+            texture_image_raii,
+            texture_view_raii,
+            texture_alloc,
+            texture_sampler_raii,
+            block_atlas,
+        ) = Self::create_texture_atlas(&device, &mut allocator, command_pool, queue, resolver);
+        let texture_image = texture_image_raii.into_handle();
+        let texture_image_view = texture_view_raii.into_handle();
+        let texture_sampler = texture_sampler_raii.into_handle();
 
         Self::write_descriptors(
             &device,
@@ -463,10 +477,10 @@ impl Renderer {
         let entity_atlas = super::entity::atlas::EntityTextureAtlas::load_with_resolver(resolver);
         super::item_icons::precompute_item_meshes_with_resolver(resolver);
         let (
-            entity_texture_image,
-            entity_texture_view,
+            entity_texture_image_raii,
+            entity_texture_view_raii,
             entity_texture_alloc,
-            entity_texture_sampler,
+            entity_texture_sampler_raii,
         ) = Self::create_entity_texture(
             &device,
             &mut allocator,
@@ -474,6 +488,9 @@ impl Renderer {
             queue,
             &entity_atlas,
         );
+        let entity_texture_image = entity_texture_image_raii.into_handle();
+        let entity_texture_view = entity_texture_view_raii.into_handle();
+        let entity_texture_sampler = entity_texture_sampler_raii.into_handle();
 
         // Entity descriptor pool and sets (same layout as world, different texture)
         let (entity_descriptor_pool, entity_descriptor_sets) =
@@ -859,17 +876,30 @@ impl Renderer {
         Renderer {
             _entry: entry,
             instance,
+            debug_utils,
+            debug_messenger,
             device,
             _physical_device: physical_device,
             queue,
-            surface_fn,
-            surface,
-            swapchain_fn,
-            swapchain,
-            _swapchain_images: swapchain_images,
-            swapchain_image_views: swapchain_views,
-            _swapchain_format: swapchain_format,
-            swapchain_extent,
+            swapchain: super::swapchain::SwapchainManager::new(
+                surface_fn,
+                surface,
+                swapchain_fn,
+                swapchain,
+                swapchain_images,
+                swapchain_views,
+                swapchain_format,
+                swapchain_extent,
+                depth_images,
+                depth_image_views,
+                depth_format,
+                depth_allocs,
+                framebuffers,
+                image_available,
+                render_finished,
+                in_flight_fences,
+                window_size,
+            ),
             render_pass,
             pipeline,
             pipeline_layout,
@@ -1016,20 +1046,14 @@ impl Renderer {
             custom_sky_texture_view,
             custom_sky_texture_alloc: Some(custom_sky_texture_alloc),
             custom_sky_data: None,
-            framebuffers,
             command_buffers,
             command_pool,
-            image_available,
-            render_finished,
-            in_flight_fences,
-            current_frame: 0,
-            depth_images,
-            depth_image_views,
-            depth_format,
-            depth_allocs,
-            uniform_buffers,
-            uniform_allocs,
-            uniform_mapped,
+            resources: super::resource_manager::ResourceManager::new(
+                allocator,
+                uniform_buffers,
+                uniform_allocs,
+                uniform_mapped,
+            ),
             texture_image,
             texture_image_view,
             texture_sampler,
@@ -1079,7 +1103,6 @@ impl Renderer {
             player_skin_layout_hash: 0,
             player_skin_atlas_generation: 0,
             entity_atlas_generation: 0,
-            allocator: std::mem::ManuallyDrop::new(allocator),
             // GUI placeholders (initialized by init_gui())
             player_preview_cache: Default::default(),
             gui_pipeline: vk::Pipeline::null(),
@@ -1153,55 +1176,51 @@ impl Renderer {
             current_camera: None,
             state: {
                 let mut s = super::state::GameRenderState::default();
-                s.gui_scale = 3;
-                s.render_distance = 8;
-                s.smooth_lighting = true;
-                s.particles_label = "All".to_string();
-                s.particles_enabled = true;
-                s.master_volume = 1.0;
-                s.music_volume = 1.0;
-                s.blocks_volume = 1.0;
-                s.hostile_volume = 1.0;
-                s.friendly_volume = 1.0;
-                s.players_volume = 1.0;
-                s.ambient_volume = 1.0;
-                s.weather_volume = 1.0;
-                s.ui_volume = 1.0;
-                s.fov = 70.0;
-                s.max_framerate = crate::client::config::UNLIMITED_FRAMERATE;
-                s.clouds = true;
-                s.entity_shadows = true;
-                s.view_bobbing = true;
-                s.difficulty = 2;
-                s.skin_parts = 0xFF;
-                s.language_code = "zh_CN".to_string();
-                s.language_name = "中文（简体）".to_string();
-                s.sky_brightness_cached = 1.0;
-                s.local_skin_size = [64, 64];
-                s.local_skin_face = [[255, 255, 255, 255]; 64];
-                s.local_skin_preview =
-                    crate::assets::skin::PlayerSkin::default_steve().preview_pixels();
-                s.local_skin = crate::assets::skin::PlayerSkin::default_steve();
-                s.inventory_window_type = "minecraft:container".to_string();
-                s.inventory_window_title = "Inventory".to_string();
-                s.ray_tracing_available = render_capabilities.ray_tracing;
-                s.fsr3_available = render_capabilities.fsr3;
-                s.shader_pack_status =
-                    shader_pack
-                        .error
-                        .clone()
-                        .unwrap_or_else(|| match &shader_pack.active_name {
-                            Some(name) => format!("Active: {name}"),
-                            None => "Shaders: Off".to_string(),
-                        });
+                s.settings.set_gui_scale(3);
+                s.settings.set_render_distance(8);
+                s.settings.set_smooth_lighting(true);
+                s.settings.set_particles_label("All".to_string());
+                s.settings.set_particles_enabled(true);
+                s.settings.set_master_volume(1.0);
+                s.settings.set_music_volume(1.0);
+                s.settings.set_blocks_volume(1.0);
+                s.settings.set_hostile_volume(1.0);
+                s.settings.set_friendly_volume(1.0);
+                s.settings.set_players_volume(1.0);
+                s.settings.set_ambient_volume(1.0);
+                s.settings.set_weather_volume(1.0);
+                s.settings.set_ui_volume(1.0);
+                s.settings.set_fov(70.0);
+                s.settings.set_max_framerate(crate::client::config::UNLIMITED_FRAMERATE);
+                s.settings.set_clouds(true);
+                s.settings.set_entity_shadows(true);
+                s.settings.set_view_bobbing(true);
+                s.settings.set_difficulty(2);
+                s.settings.set_skin_parts(0xFF);
+                s.settings.set_language_code("zh_CN".to_string());
+                s.settings.set_language_name("中文（简体）".to_string());
+                s.frame_profile.set_sky_brightness_cached(1.0);
+                s.settings.set_local_skin_size([64, 64]);
+                s.settings.set_local_skin_face([[255, 255, 255, 255]; 64]);
+                s.settings.set_local_skin_preview(crate::assets::skin::PlayerSkin::default_steve().preview_pixels());
+                s.settings.set_local_skin(crate::assets::skin::PlayerSkin::default_steve());
+                s.inventory.set_inventory_window_type("minecraft:container".to_string());
+                s.inventory.set_inventory_window_title("Inventory".to_string());
+                s.server_list.set_ray_tracing_available(render_capabilities.ray_tracing);
+                s.server_list.set_fsr3_available(render_capabilities.fsr3);
+                s.server_list.set_shader_pack_status(shader_pack
+                                            .error
+                                            .clone()
+                                            .unwrap_or_else(|| match &shader_pack.active_name {
+                                                Some(name) => format!("Active: {name}"),
+                                                None => "Shaders: Off".to_string(),
+                                            }));
                 s
             },
             particles: Vec::new(),
             particle_list: Vec::new(),
             hand_equip_progress: 1.0,
             hand_animation_last_update: std::time::Instant::now(),
-            window_size,
-            needs_recreate: false,
             first_frame_done: std::cell::Cell::new(false),
         }
     }
@@ -1211,235 +1230,6 @@ impl Renderer {
     pub fn update_skin_gpu(&mut self) {
         self.local_skin_upload_pending = true;
     }
-
-    pub(super) fn create_swapchain(
-        surface_fn: &ash::khr::surface::Instance,
-        swapchain_fn: &ash::khr::swapchain::Device,
-        device: &ash::Device,
-        physical_device: vk::PhysicalDevice,
-        surface: vk::SurfaceKHR,
-        window_size: (u32, u32),
-        old_swapchain: vk::SwapchainKHR,
-    ) -> (
-        vk::SwapchainKHR,
-        Vec<vk::Image>,
-        Vec<vk::ImageView>,
-        vk::Format,
-        vk::Extent2D,
-    ) {
-        let caps = unsafe {
-            surface_fn.get_physical_device_surface_capabilities(physical_device, surface)
-        }
-        .unwrap();
-        let formats =
-            unsafe { surface_fn.get_physical_device_surface_formats(physical_device, surface) }
-                .unwrap();
-
-        let format = formats
-            .iter()
-            .find(|f| f.format == vk::Format::B8G8R8A8_SRGB)
-            .map(|f| f.format)
-            .unwrap_or(formats[0].format);
-
-        let extent = if caps.current_extent.width != u32::MAX {
-            caps.current_extent
-        } else {
-            vk::Extent2D {
-                width: window_size
-                    .0
-                    .clamp(caps.min_image_extent.width, caps.max_image_extent.width),
-                height: window_size
-                    .1
-                    .clamp(caps.min_image_extent.height, caps.max_image_extent.height),
-            }
-        };
-        let mut image_count = caps.min_image_count.max(MAX_FRAMES as u32);
-        if caps.max_image_count != 0 {
-            image_count = image_count.min(caps.max_image_count);
-        }
-
-        let swapchain = unsafe {
-            swapchain_fn.create_swapchain(
-                &vk::SwapchainCreateInfoKHR {
-                    surface,
-                    min_image_count: image_count,
-                    image_format: format,
-                    image_color_space: vk::ColorSpaceKHR::SRGB_NONLINEAR,
-                    image_extent: extent,
-                    image_array_layers: 1,
-                    image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT,
-                    pre_transform: caps.current_transform,
-                    composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
-                    present_mode: vk::PresentModeKHR::IMMEDIATE,
-                    clipped: vk::TRUE,
-                    old_swapchain,
-                    ..Default::default()
-                },
-                None,
-            )
-        }
-        .expect("create_swapchain");
-
-        let images = unsafe { swapchain_fn.get_swapchain_images(swapchain).unwrap() };
-        let views: Vec<_> = images
-            .iter()
-            .map(|&img| {
-                unsafe {
-                    device.create_image_view(
-                        &vk::ImageViewCreateInfo {
-                            image: img,
-                            view_type: vk::ImageViewType::TYPE_2D,
-                            format,
-                            subresource_range: color_subresource(),
-                            ..Default::default()
-                        },
-                        None,
-                    )
-                }
-                .unwrap()
-            })
-            .collect();
-
-        (swapchain, images, views, format, extent)
-    }
-
-    // --- Depth buffer ---
-
-    pub(super) fn create_depth_buffer(
-        device: &ash::Device,
-        allocator: &mut gpu_allocator::vulkan::Allocator,
-        format: vk::Format,
-        extent: vk::Extent2D,
-    ) -> (vk::Image, vk::ImageView, gpu_allocator::vulkan::Allocation) {
-        let image = unsafe {
-            device.create_image(
-                &vk::ImageCreateInfo {
-                    image_type: vk::ImageType::TYPE_2D,
-                    format,
-                    extent: vk::Extent3D {
-                        width: extent.width,
-                        height: extent.height,
-                        depth: 1,
-                    },
-                    mip_levels: 1,
-                    array_layers: 1,
-                    samples: vk::SampleCountFlags::TYPE_1,
-                    usage: vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
-                    ..Default::default()
-                },
-                None,
-            )
-        }
-        .unwrap();
-        let reqs = unsafe { device.get_image_memory_requirements(image) };
-        let alloc = allocator
-            .allocate(&gpu_allocator::vulkan::AllocationCreateDesc {
-                name: "depth",
-                requirements: reqs,
-                location: gpu_allocator::MemoryLocation::GpuOnly,
-                linear: false,
-                allocation_scheme: gpu_allocator::vulkan::AllocationScheme::GpuAllocatorManaged,
-            })
-            .unwrap();
-        unsafe {
-            device
-                .bind_image_memory(image, alloc.memory(), alloc.offset())
-                .unwrap()
-        };
-        let view = unsafe {
-            device.create_image_view(
-                &vk::ImageViewCreateInfo {
-                    image,
-                    view_type: vk::ImageViewType::TYPE_2D,
-                    format,
-                    subresource_range: depth_subresource(),
-                    ..Default::default()
-                },
-                None,
-            )
-        }
-        .unwrap();
-        (image, view, alloc)
-    }
-
-    pub(super) fn create_depth_buffers(
-        device: &ash::Device,
-        allocator: &mut gpu_allocator::vulkan::Allocator,
-        format: vk::Format,
-        extent: vk::Extent2D,
-        count: usize,
-    ) -> (
-        Vec<vk::Image>,
-        Vec<vk::ImageView>,
-        Vec<gpu_allocator::vulkan::Allocation>,
-    ) {
-        let mut images = Vec::with_capacity(count);
-        let mut views = Vec::with_capacity(count);
-        let mut allocations = Vec::with_capacity(count);
-        for _ in 0..count {
-            let (image, view, allocation) =
-                Self::create_depth_buffer(device, allocator, format, extent);
-            images.push(image);
-            views.push(view);
-            allocations.push(allocation);
-        }
-        (images, views, allocations)
-    }
-
-    // --- Framebuffers ---
-
-    pub(super) fn create_framebuffers(
-        device: &ash::Device,
-        render_pass: vk::RenderPass,
-        views: &[vk::ImageView],
-        depth_views: &[vk::ImageView],
-        extent: vk::Extent2D,
-    ) -> Vec<vk::Framebuffer> {
-        assert_eq!(views.len(), depth_views.len());
-        views
-            .iter()
-            .zip(depth_views)
-            .map(|(&view, &depth_view)| {
-                let att = [view, depth_view];
-                unsafe {
-                    device.create_framebuffer(
-                        &vk::FramebufferCreateInfo {
-                            render_pass,
-                            attachment_count: 2,
-                            p_attachments: att.as_ptr(),
-                            width: extent.width,
-                            height: extent.height,
-                            layers: 1,
-                            ..Default::default()
-                        },
-                        None,
-                    )
-                }
-                .unwrap()
-            })
-            .collect()
-    }
-
-    // --- Sync ---
-
-    pub(super) fn create_sync_objects(
-        device: &ash::Device,
-    ) -> (Vec<vk::Semaphore>, Vec<vk::Semaphore>, Vec<vk::Fence>) {
-        let sem_info = vk::SemaphoreCreateInfo::default();
-        let fence_info = vk::FenceCreateInfo {
-            flags: vk::FenceCreateFlags::SIGNALED,
-            ..Default::default()
-        };
-        let mut a = Vec::with_capacity(MAX_FRAMES);
-        let mut b = Vec::with_capacity(MAX_FRAMES);
-        let mut c = Vec::with_capacity(MAX_FRAMES);
-        for _ in 0..MAX_FRAMES {
-            a.push(unsafe { device.create_semaphore(&sem_info, None) }.unwrap());
-            b.push(unsafe { device.create_semaphore(&sem_info, None) }.unwrap());
-            c.push(unsafe { device.create_fence(&fence_info, None) }.unwrap());
-        }
-        (a, b, c)
-    }
 }
 
 impl Drop for Renderer {
@@ -1447,45 +1237,110 @@ impl Drop for Renderer {
         unsafe {
             // Ignore errors during shutdown — device may already be lost
             let _ = self.device.device_wait_idle();
+        }
 
-            for i in 0..MAX_FRAMES {
-                self.device.destroy_semaphore(self.image_available[i], None);
-                self.device.destroy_semaphore(self.render_finished[i], None);
-                self.device.destroy_fence(self.in_flight_fences[i], None);
-                self.device.destroy_buffer(self.uniform_buffers[i], None);
-                if let Some(buffer) = self.block_animation_buffers[i].take() {
-                    self.device.destroy_buffer(buffer, None);
-                }
-                if let Some(allocation) = self.block_animation_allocs[i].take() {
-                    self.allocator.free(allocation).ok();
-                }
-                if let Some(buffer) = self.entity_skin_upload_buffers[i].take() {
-                    self.device.destroy_buffer(buffer, None);
-                }
-                if let Some(allocation) = self.entity_skin_upload_allocs[i].take() {
-                    self.allocator.free(allocation).ok();
-                }
-                if let Some(buffer) = self.local_skin_upload_buffers[i].take() {
-                    self.device.destroy_buffer(buffer, None);
-                }
-                if let Some(allocation) = self.local_skin_upload_allocs[i].take() {
-                    self.allocator.free(allocation).ok();
-                }
-                if let Some(buffer) = self.chunk_indirect_buffers[i].take() {
-                    self.device.destroy_buffer(buffer, None);
-                }
-                if let Some(allocation) = self.chunk_indirect_allocs[i].take() {
-                    self.allocator.free(allocation).ok();
-                }
-                if let Some(buffer) = self.chunk_upload_buffers[i].take() {
-                    self.device.destroy_buffer(buffer, None);
-                }
-                if let Some(allocation) = self.chunk_upload_allocs[i].take() {
-                    self.allocator.free(allocation).ok();
-                }
+        // Adopt raw handles into RAII wrappers so their Drop impls invoke
+        // the matching `destroy_*`. This replaces the previous wall of
+        // manual `destroy_*` calls. Allocations are freed separately
+        // because the gpu_allocator is `ManuallyDrop` and not shareable.
+
+        let device = self.device.clone();
+
+        // Destroy the debug messenger explicitly while the instance is
+        // still alive. Previously this was leaked via std::mem::forget,
+        // which triggered validation-layer errors on shutdown.
+        if let Some(debug_utils) = self.debug_utils.take() {
+            let _ = super::raii::DebugMessenger::from_handle(
+                debug_utils,
+                std::mem::replace(
+                    &mut self.debug_messenger,
+                    vk::DebugUtilsMessengerEXT::null(),
+                ),
+            );
+        }
+
+        // Per-frame sync objects (owned by SwapchainManager), uniform buffers and per-frame staging buffers.
+        for i in 0..MAX_FRAMES {
+            let _ = super::raii::Semaphore::from_handle(
+                device.clone(),
+                std::mem::replace(&mut self.swapchain.image_available[i], vk::Semaphore::null()),
+            );
+            let _ = super::raii::Semaphore::from_handle(
+                device.clone(),
+                std::mem::replace(&mut self.swapchain.render_finished[i], vk::Semaphore::null()),
+            );
+            let _ = super::raii::Fence::from_handle(
+                device.clone(),
+                std::mem::replace(&mut self.swapchain.in_flight_fences[i], vk::Fence::null()),
+            );
+            let _ = super::raii::Buffer::from_handle(
+                device.clone(),
+                self.resources.take_uniform_buffer(i),
+            );
+            if let Some(b) = self.block_animation_buffers[i].take() {
+                let _ = super::raii::Buffer::from_handle(device.clone(), b);
             }
+            if let Some(b) = self.entity_skin_upload_buffers[i].take() {
+                let _ = super::raii::Buffer::from_handle(device.clone(), b);
+            }
+            if let Some(b) = self.local_skin_upload_buffers[i].take() {
+                let _ = super::raii::Buffer::from_handle(device.clone(), b);
+            }
+            if let Some(b) = self.chunk_indirect_buffers[i].take() {
+                let _ = super::raii::Buffer::from_handle(device.clone(), b);
+            }
+            if let Some(b) = self.chunk_upload_buffers[i].take() {
+                let _ = super::raii::Buffer::from_handle(device.clone(), b);
+            }
+            if let Some(a) = self.block_animation_allocs[i].take() {
+                self.resources.free(a);
+            }
+            if let Some(a) = self.entity_skin_upload_allocs[i].take() {
+                self.resources.free(a);
+            }
+            if let Some(a) = self.local_skin_upload_allocs[i].take() {
+                self.resources.free(a);
+            }
+            if let Some(a) = self.chunk_indirect_allocs[i].take() {
+                self.resources.free(a);
+            }
+            if let Some(a) = self.chunk_upload_allocs[i].take() {
+                self.resources.free(a);
+            }
+        }
+        self.resources.destroy_uniform_buffers(&device);
 
-            for cmd in self.draw_cmds.drain(..) {
+        // Chunk draw command dedicated buffers
+        for cmd in self.draw_cmds.drain(..) {
+            if let ChunkStorage::Dedicated {
+                vertex_buffer,
+                index_buffer,
+                vertex_alloc,
+                index_alloc,
+            } = cmd.storage
+            {
+                let _ = super::raii::Buffer::from_handle(device.clone(), vertex_buffer);
+                let _ = super::raii::Buffer::from_handle(device.clone(), index_buffer);
+                self.resources.free(vertex_alloc);
+                self.resources.free(index_alloc);
+            }
+        }
+        for cmd in self.pending_retired_draw_cmds.drain(..) {
+            if let ChunkStorage::Dedicated {
+                vertex_buffer,
+                index_buffer,
+                vertex_alloc,
+                index_alloc,
+            } = cmd.storage
+            {
+                let _ = super::raii::Buffer::from_handle(device.clone(), vertex_buffer);
+                let _ = super::raii::Buffer::from_handle(device.clone(), index_buffer);
+                self.resources.free(vertex_alloc);
+                self.resources.free(index_alloc);
+            }
+        }
+        for commands in &mut self.retired_draw_cmds {
+            for cmd in commands.drain(..) {
                 if let ChunkStorage::Dedicated {
                     vertex_buffer,
                     index_buffer,
@@ -1493,423 +1348,456 @@ impl Drop for Renderer {
                     index_alloc,
                 } = cmd.storage
                 {
-                    self.device.destroy_buffer(vertex_buffer, None);
-                    self.device.destroy_buffer(index_buffer, None);
-                    self.allocator.free(vertex_alloc).ok();
-                    self.allocator.free(index_alloc).ok();
+                    let _ = super::raii::Buffer::from_handle(device.clone(), vertex_buffer);
+                    let _ = super::raii::Buffer::from_handle(device.clone(), index_buffer);
+                    self.resources.free(vertex_alloc);
+                    self.resources.free(index_alloc);
                 }
             }
-            for cmd in self.pending_retired_draw_cmds.drain(..) {
-                if let ChunkStorage::Dedicated {
-                    vertex_buffer,
-                    index_buffer,
-                    vertex_alloc,
-                    index_alloc,
-                } = cmd.storage
-                {
-                    self.device.destroy_buffer(vertex_buffer, None);
-                    self.device.destroy_buffer(index_buffer, None);
-                    self.allocator.free(vertex_alloc).ok();
-                    self.allocator.free(index_alloc).ok();
+        }
+
+        // Chunk arena buffers
+        let _ = super::raii::Buffer::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.chunk_vertex_buffer, vk::Buffer::null()),
+        );
+        let _ = super::raii::Buffer::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.chunk_index_buffer, vk::Buffer::null()),
+        );
+        self.resources
+            .free(std::mem::take(&mut self.chunk_vertex_alloc));
+        self.resources
+            .free(std::mem::take(&mut self.chunk_index_alloc));
+
+        // GUI buffers
+        for slot in self.gui_buffers.drain(..) {
+            if let Some(b) = slot.vertex_buffer {
+                let _ = super::raii::Buffer::from_handle(device.clone(), b);
+            }
+            if let Some(b) = slot.index_buffer {
+                let _ = super::raii::Buffer::from_handle(device.clone(), b);
+            }
+            if let Some(a) = slot.vertex_alloc {
+                self.resources.free(a);
+            }
+            if let Some(a) = slot.index_alloc {
+                self.resources.free(a);
+            }
+        }
+
+        // Block selection buffers
+        if let Some(b) = self.block_vertex_buffer.take() {
+            let _ = super::raii::Buffer::from_handle(device.clone(), b);
+        }
+        if let Some(b) = self.block_index_buffer.take() {
+            let _ = super::raii::Buffer::from_handle(device.clone(), b);
+        }
+        if let Some(a) = self.block_vertex_alloc.take() {
+            self.resources.free(a);
+        }
+        if let Some(a) = self.block_index_alloc.take() {
+            self.resources.free(a);
+        }
+
+        // GUI pipeline and descriptors
+        let _ = super::raii::Pipeline::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.gui_pipeline, vk::Pipeline::null()),
+        );
+        let _ = super::raii::PipelineLayout::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.gui_pipeline_layout, vk::PipelineLayout::null()),
+        );
+        let _ = super::raii::DescriptorPool::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.gui_descriptor_pool, vk::DescriptorPool::null()),
+        );
+        let _ = super::raii::DescriptorSetLayout::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.gui_descriptor_layout, vk::DescriptorSetLayout::null()),
+        );
+        let _ = super::raii::Buffer::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.gui_uniform_buffer, vk::Buffer::null()),
+        );
+        self.resources
+            .free(std::mem::take(&mut self.gui_uniform_alloc));
+
+        // GUI textures: image + view + sampler + alloc.
+        macro_rules! drop_gui_texture {
+            ($image:expr, $view:expr, $sampler:expr, $alloc:expr) => {{
+                let img = std::mem::replace(&mut $image, vk::Image::null());
+                if img != vk::Image::null() {
+                    let _ = super::raii::Image::from_handle(device.clone(), img);
+                    let _ = super::raii::ImageView::from_handle(
+                        device.clone(),
+                        std::mem::replace(&mut $view, vk::ImageView::null()),
+                    );
+                    let _ = super::raii::Sampler::from_handle(
+                        device.clone(),
+                        std::mem::replace(&mut $sampler, vk::Sampler::null()),
+                    );
+                    self.resources.free(std::mem::take(&mut $alloc));
+                }
+            }};
+        }
+        drop_gui_texture!(
+            self.gui_widget_image,
+            self.gui_widget_view,
+            self.gui_widget_sampler,
+            self.gui_widget_alloc
+        );
+        drop_gui_texture!(
+            self.gui_font_image,
+            self.gui_font_view,
+            self.gui_font_sampler,
+            self.gui_font_alloc
+        );
+        drop_gui_texture!(
+            self.gui_inventory_image,
+            self.gui_inventory_view,
+            self.gui_inventory_sampler,
+            self.gui_inventory_alloc
+        );
+        drop_gui_texture!(
+            self.gui_generic54_image,
+            self.gui_generic54_view,
+            self.gui_generic54_sampler,
+            self.gui_generic54_alloc
+        );
+        drop_gui_texture!(
+            self.gui_items_image,
+            self.gui_items_view,
+            self.gui_items_sampler,
+            self.gui_items_alloc
+        );
+        drop_gui_texture!(
+            self.gui_creative_image,
+            self.gui_creative_view,
+            self.gui_creative_sampler,
+            self.gui_creative_alloc
+        );
+        drop_gui_texture!(
+            self.gui_options_bg_image,
+            self.gui_options_bg_view,
+            self.gui_options_bg_sampler,
+            self.gui_options_bg_alloc
+        );
+        drop_gui_texture!(
+            self.gui_underwater_image,
+            self.gui_underwater_view,
+            self.gui_underwater_sampler,
+            self.gui_underwater_alloc
+        );
+
+        // Panorama
+        let _ = super::raii::Pipeline::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.panorama_pipeline, vk::Pipeline::null()),
+        );
+        let _ = super::raii::PipelineLayout::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.panorama_pipeline_layout, vk::PipelineLayout::null()),
+        );
+        let _ = super::raii::DescriptorPool::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.panorama_descriptor_pool, vk::DescriptorPool::null()),
+        );
+        let _ = super::raii::Buffer::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.panorama_uniform_buffer, vk::Buffer::null()),
+        );
+        self.resources
+            .free(std::mem::take(&mut self.panorama_uniform_alloc));
+        {
+            let img = std::mem::replace(&mut self.panorama_image, vk::Image::null());
+            if img != vk::Image::null() {
+                let _ = super::raii::Image::from_handle(device.clone(), img);
+                let _ = super::raii::ImageView::from_handle(
+                    device.clone(),
+                    std::mem::replace(&mut self.panorama_view, vk::ImageView::null()),
+                );
+                let _ = super::raii::Sampler::from_handle(
+                    device.clone(),
+                    std::mem::replace(&mut self.panorama_sampler, vk::Sampler::null()),
+                );
+                if let Some(a) = self.panorama_alloc.take() {
+                    self.resources.free(a);
                 }
             }
-            for commands in &mut self.retired_draw_cmds {
-                for cmd in commands.drain(..) {
-                    if let ChunkStorage::Dedicated {
-                        vertex_buffer,
-                        index_buffer,
-                        vertex_alloc,
-                        index_alloc,
-                    } = cmd.storage
-                    {
-                        self.device.destroy_buffer(vertex_buffer, None);
-                        self.device.destroy_buffer(index_buffer, None);
-                        self.allocator.free(vertex_alloc).ok();
-                        self.allocator.free(index_alloc).ok();
+        }
+
+        // Particle mesh buffers
+        if let Some(b) = self.particle_vertex_buffer.take() {
+            let _ = super::raii::Buffer::from_handle(device.clone(), b);
+        }
+        if let Some(b) = self.particle_index_buffer.take() {
+            let _ = super::raii::Buffer::from_handle(device.clone(), b);
+        }
+        if let Some(a) = self.particle_vertex_alloc.take() {
+            self.resources.free(a);
+        }
+        if let Some(a) = self.particle_index_alloc.take() {
+            self.resources.free(a);
+        }
+
+        // Nametag mesh buffers
+        if let Some(b) = self.nametag_vertex_buffer.take() {
+            let _ = super::raii::Buffer::from_handle(device.clone(), b);
+        }
+        if let Some(b) = self.nametag_index_buffer.take() {
+            let _ = super::raii::Buffer::from_handle(device.clone(), b);
+        }
+        if let Some(a) = self.nametag_vertex_alloc.take() {
+            self.resources.free(a);
+        }
+        if let Some(a) = self.nametag_index_alloc.take() {
+            self.resources.free(a);
+        }
+        let _ = super::raii::Pipeline::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.nametag_pipeline, vk::Pipeline::null()),
+        );
+        let _ = super::raii::PipelineLayout::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.nametag_pipeline_layout, vk::PipelineLayout::null()),
+        );
+
+        // First-person hand buffers (vertex/index buffer + allocation pairs).
+        macro_rules! drop_buffer_alloc {
+            ($buf:expr, $alloc:expr) => {{
+                if let Some(b) = $buf.take() {
+                    let _ = super::raii::Buffer::from_handle(device.clone(), b);
+                }
+                if let Some(a) = $alloc.take() {
+                    self.resources.free(a);
+                }
+            }};
+        }
+        drop_buffer_alloc!(self.fp_arm_vertex_buffer, self.fp_arm_vertex_alloc);
+        drop_buffer_alloc!(self.fp_arm_index_buffer, self.fp_arm_index_alloc);
+        drop_buffer_alloc!(self.fp_block_op_vertex_buffer, self.fp_block_op_vertex_alloc);
+        drop_buffer_alloc!(self.fp_block_op_index_buffer, self.fp_block_op_index_alloc);
+        drop_buffer_alloc!(self.fp_block_tr_vertex_buffer, self.fp_block_tr_vertex_alloc);
+        drop_buffer_alloc!(self.fp_block_tr_index_buffer, self.fp_block_tr_index_alloc);
+
+        // World texture
+        if let Some(a) = self.texture_alloc.take() {
+            self.resources.free(a);
+        }
+        let _ = super::raii::DescriptorPool::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.descriptor_pool, vk::DescriptorPool::null()),
+        );
+        let _ = super::raii::DescriptorSetLayout::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.descriptor_layout, vk::DescriptorSetLayout::null()),
+        );
+        let _ = super::raii::ImageView::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.texture_image_view, vk::ImageView::null()),
+        );
+        let _ = super::raii::Sampler::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.texture_sampler, vk::Sampler::null()),
+        );
+        let _ = super::raii::Image::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.texture_image, vk::Image::null()),
+        );
+
+        // Depth buffer (owned by SwapchainManager)
+        for view in self.swapchain.depth_image_views.drain(..) {
+            let _ = super::raii::ImageView::from_handle(device.clone(), view);
+        }
+        for image in self.swapchain.depth_images.drain(..) {
+            let _ = super::raii::Image::from_handle(device.clone(), image);
+        }
+        for alloc in self.swapchain.depth_allocs.drain(..) {
+            self.resources.free(alloc);
+        }
+
+        // Pipelines
+        let _ = super::raii::Pipeline::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.pipeline, vk::Pipeline::null()),
+        );
+        let _ = super::raii::Pipeline::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.transparent_pipeline, vk::Pipeline::null()),
+        );
+        let _ = super::raii::PipelineLayout::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.pipeline_layout, vk::PipelineLayout::null()),
+        );
+
+        // Sky pipeline
+        let _ = super::raii::Pipeline::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.sky_pipeline, vk::Pipeline::null()),
+        );
+        let _ = super::raii::PipelineLayout::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.sky_pipeline_layout, vk::PipelineLayout::null()),
+        );
+        let _ = super::raii::DescriptorPool::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.sky_descriptor_pool, vk::DescriptorPool::null()),
+        );
+        let _ = super::raii::Buffer::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.sky_uniform_buffer, vk::Buffer::null()),
+        );
+        self.resources
+            .free(std::mem::take(&mut self.sky_uniform_alloc));
+        let _ = super::raii::Buffer::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.sky_vertex_buffer, vk::Buffer::null()),
+        );
+        self.resources
+            .free(std::mem::take(&mut self.sky_vertex_alloc));
+
+        // Entity / particle pipelines
+        let _ = super::raii::Pipeline::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.entity_pipeline, vk::Pipeline::null()),
+        );
+        let _ = super::raii::PipelineLayout::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.entity_pipeline_layout, vk::PipelineLayout::null()),
+        );
+        let _ = super::raii::Pipeline::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.particle_pipeline, vk::Pipeline::null()),
+        );
+        let _ = super::raii::PipelineLayout::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.particle_pipeline_layout, vk::PipelineLayout::null()),
+        );
+        let _ = super::raii::DescriptorPool::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.entity_descriptor_pool, vk::DescriptorPool::null()),
+        );
+
+        // Entity GPU meshes
+        for (_, mut mesh) in self.entity_gpu_meshes.drain() {
+            super::destroy_entity_gpu_mesh(&self.device, self.resources.allocator_mut(), &mut mesh);
+        }
+
+        // Entity vertex/index buffers
+        if let Some(b) = self.entity_vertex_buffer.take() {
+            let _ = super::raii::Buffer::from_handle(device.clone(), b);
+        }
+        if let Some(b) = self.entity_index_buffer.take() {
+            let _ = super::raii::Buffer::from_handle(device.clone(), b);
+        }
+        if let Some(a) = self.entity_vertex_alloc.take() {
+            self.resources.free(a);
+        }
+        if let Some(a) = self.entity_index_alloc.take() {
+            self.resources.free(a);
+        }
+        drop_buffer_alloc!(
+            self.entity_held_block_vertex_buffer,
+            self.entity_held_block_vertex_alloc
+        );
+        drop_buffer_alloc!(
+            self.entity_held_block_index_buffer,
+            self.entity_held_block_index_alloc
+        );
+        drop_buffer_alloc!(
+            self.entity_held_item_vertex_buffer,
+            self.entity_held_item_vertex_alloc
+        );
+        drop_buffer_alloc!(
+            self.entity_held_item_index_buffer,
+            self.entity_held_item_index_alloc
+        );
+
+        // Entity texture
+        {
+            let img = std::mem::replace(&mut self.entity_texture_image, vk::Image::null());
+            if img != vk::Image::null() {
+                let _ = super::raii::Image::from_handle(device.clone(), img);
+                let _ = super::raii::ImageView::from_handle(
+                    device.clone(),
+                    std::mem::replace(&mut self.entity_texture_view, vk::ImageView::null()),
+                );
+                let _ = super::raii::Sampler::from_handle(
+                    device.clone(),
+                    std::mem::replace(&mut self.entity_texture_sampler, vk::Sampler::null()),
+                );
+                if let Some(a) = self.entity_texture_alloc.take() {
+                    self.resources.free(a);
+                }
+            }
+        }
+
+        // Skin / sun / moon / custom sky textures (image + view + alloc, no sampler).
+        macro_rules! drop_image_texture {
+            ($image:expr, $view:expr, $alloc:expr) => {{
+                let img = std::mem::replace(&mut $image, vk::Image::null());
+                if img != vk::Image::null() {
+                    let _ = super::raii::Image::from_handle(device.clone(), img);
+                    let _ = super::raii::ImageView::from_handle(
+                        device.clone(),
+                        std::mem::replace(&mut $view, vk::ImageView::null()),
+                    );
+                    if let Some(a) = $alloc.take() {
+                        self.resources.free(a);
                     }
                 }
-            }
-            self.device.destroy_buffer(self.chunk_vertex_buffer, None);
-            self.device.destroy_buffer(self.chunk_index_buffer, None);
-            self.allocator
-                .free(std::mem::take(&mut self.chunk_vertex_alloc))
-                .ok();
-            self.allocator
-                .free(std::mem::take(&mut self.chunk_index_alloc))
-                .ok();
-            for alloc in self.uniform_allocs.drain(..) {
-                self.allocator.free(alloc).ok();
-            }
-            for slot in self.gui_buffers.drain(..) {
-                if let Some(buffer) = slot.vertex_buffer {
-                    self.device.destroy_buffer(buffer, None);
-                }
-                if let Some(buffer) = slot.index_buffer {
-                    self.device.destroy_buffer(buffer, None);
-                }
-                if let Some(alloc) = slot.vertex_alloc {
-                    self.allocator.free(alloc).ok();
-                }
-                if let Some(alloc) = slot.index_alloc {
-                    self.allocator.free(alloc).ok();
-                }
-            }
-            // Block selection buffers
-            if let Some(buffer) = self.block_vertex_buffer.take() {
-                self.device.destroy_buffer(buffer, None);
-            }
-            if let Some(buffer) = self.block_index_buffer.take() {
-                self.device.destroy_buffer(buffer, None);
-            }
-            if let Some(alloc) = self.block_vertex_alloc.take() {
-                self.allocator.free(alloc).ok();
-            }
-            if let Some(alloc) = self.block_index_alloc.take() {
-                self.allocator.free(alloc).ok();
-            }
-            if self.gui_pipeline != vk::Pipeline::null() {
-                self.device.destroy_pipeline(self.gui_pipeline, None);
-                self.device
-                    .destroy_pipeline_layout(self.gui_pipeline_layout, None);
-            }
-            if self.gui_descriptor_pool != vk::DescriptorPool::null() {
-                self.device
-                    .destroy_descriptor_pool(self.gui_descriptor_pool, None);
-            }
-            if self.gui_descriptor_layout != vk::DescriptorSetLayout::null() {
-                self.device
-                    .destroy_descriptor_set_layout(self.gui_descriptor_layout, None);
-            }
-            if self.gui_uniform_buffer != vk::Buffer::null() {
-                self.device.destroy_buffer(self.gui_uniform_buffer, None);
-                self.allocator
-                    .free(std::mem::take(&mut self.gui_uniform_alloc))
-                    .ok();
-            }
-            if self.gui_widget_image != vk::Image::null() {
-                self.device.destroy_image_view(self.gui_widget_view, None);
-                self.device.destroy_sampler(self.gui_widget_sampler, None);
-                self.device.destroy_image(self.gui_widget_image, None);
-                self.allocator
-                    .free(std::mem::take(&mut self.gui_widget_alloc))
-                    .ok();
-            }
-            if self.gui_font_image != vk::Image::null() {
-                self.device.destroy_image_view(self.gui_font_view, None);
-                self.device.destroy_sampler(self.gui_font_sampler, None);
-                self.device.destroy_image(self.gui_font_image, None);
-                self.allocator
-                    .free(std::mem::take(&mut self.gui_font_alloc))
-                    .ok();
-            }
-            if self.gui_inventory_image != vk::Image::null() {
-                self.device
-                    .destroy_image_view(self.gui_inventory_view, None);
-                self.device
-                    .destroy_sampler(self.gui_inventory_sampler, None);
-                self.device.destroy_image(self.gui_inventory_image, None);
-                self.allocator
-                    .free(std::mem::take(&mut self.gui_inventory_alloc))
-                    .ok();
-            }
-            if self.gui_generic54_image != vk::Image::null() {
-                self.device
-                    .destroy_image_view(self.gui_generic54_view, None);
-                self.device
-                    .destroy_sampler(self.gui_generic54_sampler, None);
-                self.device.destroy_image(self.gui_generic54_image, None);
-                self.allocator
-                    .free(std::mem::take(&mut self.gui_generic54_alloc))
-                    .ok();
-            }
-            if self.gui_items_image != vk::Image::null() {
-                self.device.destroy_image_view(self.gui_items_view, None);
-                self.device.destroy_sampler(self.gui_items_sampler, None);
-                self.device.destroy_image(self.gui_items_image, None);
-                self.allocator
-                    .free(std::mem::take(&mut self.gui_items_alloc))
-                    .ok();
-            }
-            if self.gui_creative_image != vk::Image::null() {
-                self.device.destroy_image_view(self.gui_creative_view, None);
-                self.device.destroy_sampler(self.gui_creative_sampler, None);
-                self.device.destroy_image(self.gui_creative_image, None);
-                self.allocator
-                    .free(std::mem::take(&mut self.gui_creative_alloc))
-                    .ok();
-            }
-            if self.gui_options_bg_image != vk::Image::null() {
-                self.device
-                    .destroy_image_view(self.gui_options_bg_view, None);
-                self.device
-                    .destroy_sampler(self.gui_options_bg_sampler, None);
-                self.device.destroy_image(self.gui_options_bg_image, None);
-                self.allocator
-                    .free(std::mem::take(&mut self.gui_options_bg_alloc))
-                    .ok();
-            }
-            if self.gui_underwater_image != vk::Image::null() {
-                self.device
-                    .destroy_image_view(self.gui_underwater_view, None);
-                self.device
-                    .destroy_sampler(self.gui_underwater_sampler, None);
-                self.device.destroy_image(self.gui_underwater_image, None);
-                self.allocator
-                    .free(std::mem::take(&mut self.gui_underwater_alloc))
-                    .ok();
-            }
-            if self.panorama_pipeline != vk::Pipeline::null() {
-                self.device.destroy_pipeline(self.panorama_pipeline, None);
-                self.device
-                    .destroy_pipeline_layout(self.panorama_pipeline_layout, None);
-            }
-            if self.panorama_descriptor_pool != vk::DescriptorPool::null() {
-                self.device
-                    .destroy_descriptor_pool(self.panorama_descriptor_pool, None);
-            }
-            if self.panorama_uniform_buffer != vk::Buffer::null() {
-                self.device
-                    .destroy_buffer(self.panorama_uniform_buffer, None);
-                self.allocator
-                    .free(std::mem::take(&mut self.panorama_uniform_alloc))
-                    .ok();
-            }
-            if self.panorama_image != vk::Image::null() {
-                self.device.destroy_image_view(self.panorama_view, None);
-                self.device.destroy_sampler(self.panorama_sampler, None);
-                self.device.destroy_image(self.panorama_image, None);
-                if let Some(alloc) = self.panorama_alloc.take() {
-                    self.allocator.free(alloc).ok();
-                }
-            }
-            // Particle mesh buffers
-            if let Some(buf) = self.particle_vertex_buffer.take() {
-                self.device.destroy_buffer(buf, None);
-            }
-            if let Some(buffer) = self.particle_index_buffer.take() {
-                self.device.destroy_buffer(buffer, None);
-            }
-            if let Some(alloc) = self.particle_vertex_alloc.take() {
-                self.allocator.free(alloc).ok();
-            }
-            if let Some(alloc) = self.particle_index_alloc.take() {
-                self.allocator.free(alloc).ok();
-            }
-            // Nametag mesh buffers
-            if let Some(buf) = self.nametag_vertex_buffer.take() {
-                self.device.destroy_buffer(buf, None);
-            }
-            if let Some(buffer) = self.nametag_index_buffer.take() {
-                self.device.destroy_buffer(buffer, None);
-            }
-            if let Some(alloc) = self.nametag_vertex_alloc.take() {
-                self.allocator.free(alloc).ok();
-            }
-            if let Some(alloc) = self.nametag_index_alloc.take() {
-                self.allocator.free(alloc).ok();
-            }
-            if self.nametag_pipeline != vk::Pipeline::null() {
-                self.device.destroy_pipeline(self.nametag_pipeline, None);
-                self.device
-                    .destroy_pipeline_layout(self.nametag_pipeline_layout, None);
-            }
-            // First person hand buffers
-            if let Some(buffer) = self.fp_arm_vertex_buffer.take() {
-                self.device.destroy_buffer(buffer, None);
-            }
-            if let Some(buffer) = self.fp_arm_index_buffer.take() {
-                self.device.destroy_buffer(buffer, None);
-            }
-            if let Some(alloc) = self.fp_arm_vertex_alloc.take() {
-                self.allocator.free(alloc).ok();
-            }
-            if let Some(alloc) = self.fp_arm_index_alloc.take() {
-                self.allocator.free(alloc).ok();
-            }
-            if let Some(buffer) = self.fp_block_op_vertex_buffer.take() {
-                self.device.destroy_buffer(buffer, None);
-            }
-            if let Some(buffer) = self.fp_block_op_index_buffer.take() {
-                self.device.destroy_buffer(buffer, None);
-            }
-            if let Some(alloc) = self.fp_block_op_vertex_alloc.take() {
-                self.allocator.free(alloc).ok();
-            }
-            if let Some(alloc) = self.fp_block_op_index_alloc.take() {
-                self.allocator.free(alloc).ok();
-            }
-            if let Some(buffer) = self.fp_block_tr_vertex_buffer.take() {
-                self.device.destroy_buffer(buffer, None);
-            }
-            if let Some(buffer) = self.fp_block_tr_index_buffer.take() {
-                self.device.destroy_buffer(buffer, None);
-            }
-            if let Some(alloc) = self.fp_block_tr_vertex_alloc.take() {
-                self.allocator.free(alloc).ok();
-            }
-            if let Some(alloc) = self.fp_block_tr_index_alloc.take() {
-                self.allocator.free(alloc).ok();
-            }
-            if let Some(a) = self.texture_alloc.take() {
-                self.allocator.free(a).ok();
-            }
-            self.device
-                .destroy_descriptor_pool(self.descriptor_pool, None);
-            self.device
-                .destroy_descriptor_set_layout(self.descriptor_layout, None);
-
-            self.device
-                .destroy_image_view(self.texture_image_view, None);
-            self.device.destroy_sampler(self.texture_sampler, None);
-            self.device.destroy_image(self.texture_image, None);
-
-            for view in self.depth_image_views.drain(..) {
-                self.device.destroy_image_view(view, None);
-            }
-            for image in self.depth_images.drain(..) {
-                self.device.destroy_image(image, None);
-            }
-            for allocation in self.depth_allocs.drain(..) {
-                self.allocator.free(allocation).ok();
-            }
-
-            self.device.destroy_pipeline(self.pipeline, None);
-            if self.transparent_pipeline != vk::Pipeline::null() {
-                self.device
-                    .destroy_pipeline(self.transparent_pipeline, None);
-            }
-            self.device
-                .destroy_pipeline_layout(self.pipeline_layout, None);
-            // Sky pipeline
-            if self.sky_pipeline != vk::Pipeline::null() {
-                self.device.destroy_pipeline(self.sky_pipeline, None);
-                self.device
-                    .destroy_pipeline_layout(self.sky_pipeline_layout, None);
-            }
-            if self.sky_descriptor_pool != vk::DescriptorPool::null() {
-                self.device
-                    .destroy_descriptor_pool(self.sky_descriptor_pool, None);
-            }
-            if self.sky_uniform_buffer != vk::Buffer::null() {
-                self.device.destroy_buffer(self.sky_uniform_buffer, None);
-                self.allocator
-                    .free(std::mem::take(&mut self.sky_uniform_alloc))
-                    .ok();
-            }
-            if self.sky_vertex_buffer != vk::Buffer::null() {
-                self.device.destroy_buffer(self.sky_vertex_buffer, None);
-                self.allocator
-                    .free(std::mem::take(&mut self.sky_vertex_alloc))
-                    .ok();
-            }
-            // Entity pipeline resources
-            if self.entity_pipeline != vk::Pipeline::null() {
-                self.device.destroy_pipeline(self.entity_pipeline, None);
-                self.device
-                    .destroy_pipeline_layout(self.entity_pipeline_layout, None);
-            }
-            if self.particle_pipeline != vk::Pipeline::null() {
-                self.device.destroy_pipeline(self.particle_pipeline, None);
-                self.device
-                    .destroy_pipeline_layout(self.particle_pipeline_layout, None);
-            }
-            if self.entity_descriptor_pool != vk::DescriptorPool::null() {
-                self.device
-                    .destroy_descriptor_pool(self.entity_descriptor_pool, None);
-            }
-            for (_, mut mesh) in self.entity_gpu_meshes.drain() {
-                super::destroy_entity_gpu_mesh(&self.device, &mut self.allocator, &mut mesh);
-            }
-            if let Some(buf) = self.entity_vertex_buffer.take() {
-                self.device.destroy_buffer(buf, None);
-            }
-            if let Some(buf) = self.entity_index_buffer.take() {
-                self.device.destroy_buffer(buf, None);
-            }
-            if let Some(alloc) = self.entity_vertex_alloc.take() {
-                self.allocator.free(alloc).ok();
-            }
-            if let Some(alloc) = self.entity_index_alloc.take() {
-                self.allocator.free(alloc).ok();
-            }
-            for buffer in [
-                self.entity_held_block_vertex_buffer.take(),
-                self.entity_held_block_index_buffer.take(),
-                self.entity_held_item_vertex_buffer.take(),
-                self.entity_held_item_index_buffer.take(),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                self.device.destroy_buffer(buffer, None);
-            }
-            for alloc in [
-                self.entity_held_block_vertex_alloc.take(),
-                self.entity_held_block_index_alloc.take(),
-                self.entity_held_item_vertex_alloc.take(),
-                self.entity_held_item_index_alloc.take(),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                self.allocator.free(alloc).ok();
-            }
-            if self.entity_texture_image != vk::Image::null() {
-                self.device
-                    .destroy_image_view(self.entity_texture_view, None);
-                self.device
-                    .destroy_sampler(self.entity_texture_sampler, None);
-                self.device.destroy_image(self.entity_texture_image, None);
-                if let Some(alloc) = self.entity_texture_alloc.take() {
-                    self.allocator.free(alloc).ok();
-                }
-            }
-            if self.skin_texture_image != vk::Image::null() {
-                self.device.destroy_image(self.skin_texture_image, None);
-                self.device.destroy_image_view(self.skin_texture_view, None);
-                if let Some(alloc) = self.skin_texture_alloc.take() {
-                    self.allocator.free(alloc).ok();
-                }
-            }
-            if self.sun_texture_image != vk::Image::null() {
-                self.device.destroy_image(self.sun_texture_image, None);
-                self.device.destroy_image_view(self.sun_texture_view, None);
-                if let Some(alloc) = self.sun_texture_alloc.take() {
-                    self.allocator.free(alloc).ok();
-                }
-            }
-            if self.moon_texture_image != vk::Image::null() {
-                self.device.destroy_image(self.moon_texture_image, None);
-                self.device.destroy_image_view(self.moon_texture_view, None);
-                if let Some(alloc) = self.moon_texture_alloc.take() {
-                    self.allocator.free(alloc).ok();
-                }
-            }
-            if self.custom_sky_texture_image != vk::Image::null() {
-                self.device
-                    .destroy_image(self.custom_sky_texture_image, None);
-                self.device
-                    .destroy_image_view(self.custom_sky_texture_view, None);
-                if let Some(alloc) = self.custom_sky_texture_alloc.take() {
-                    self.allocator.free(alloc).ok();
-                }
-            }
-            self.device.destroy_render_pass(self.render_pass, None);
-
-            for fb in &self.framebuffers {
-                self.device.destroy_framebuffer(*fb, None);
-            }
-            for v in &self.swapchain_image_views {
-                self.device.destroy_image_view(*v, None);
-            }
-            self.device.destroy_command_pool(self.command_pool, None);
-            self.swapchain_fn.destroy_swapchain(self.swapchain, None);
-            // Destroy surface while instance is still alive (vkDestroySurfaceKHR needs a valid instance).
-            self.surface_fn.destroy_surface(self.surface, None);
-            // NOTE: device and instance are NOT manually destroyed here —
-            // ash::Device and ash::Instance drop impls will call vkDestroyDevice
-            // and vkDestroyInstance respectively. Letting ash own this avoids a
-            // double-destroy that can crash drivers with 0xc0000005.
+            }};
         }
+        drop_image_texture!(
+            self.skin_texture_image,
+            self.skin_texture_view,
+            self.skin_texture_alloc
+        );
+        drop_image_texture!(
+            self.sun_texture_image,
+            self.sun_texture_view,
+            self.sun_texture_alloc
+        );
+        drop_image_texture!(
+            self.moon_texture_image,
+            self.moon_texture_view,
+            self.moon_texture_alloc
+        );
+        drop_image_texture!(
+            self.custom_sky_texture_image,
+            self.custom_sky_texture_view,
+            self.custom_sky_texture_alloc
+        );
+
+        // Render pass, framebuffers, command pool, swapchain, surface
+        let _ = super::raii::RenderPass::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.render_pass, vk::RenderPass::null()),
+        );
+        for fb in self.swapchain.framebuffers.drain(..) {
+            let _ = super::raii::Framebuffer::from_handle(device.clone(), fb);
+        }
+        for v in self.swapchain.swapchain_image_views.drain(..) {
+            let _ = super::raii::ImageView::from_handle(device.clone(), v);
+        }
+        let _ = super::raii::CommandPool::from_handle(
+            device.clone(),
+            std::mem::replace(&mut self.command_pool, vk::CommandPool::null()),
+        );
+        let _ = super::raii::Swapchain::from_handle(
+            self.swapchain.swapchain_fn.clone(),
+            std::mem::replace(&mut self.swapchain.swapchain, vk::SwapchainKHR::null()),
+        );
+        // Destroy surface while instance is still alive (vkDestroySurfaceKHR needs a valid instance).
+        let _ = super::raii::Surface::from_handle(
+            self.swapchain.surface_fn.clone(),
+            std::mem::replace(&mut self.swapchain.surface, vk::SurfaceKHR::null()),
+        );
+        // NOTE: device and instance are NOT manually destroyed here —
+        // ash::Device and ash::Instance drop impls will call vkDestroyDevice
+        // and vkDestroyInstance respectively. Letting ash own this avoids a
+        // double-destroy that can crash drivers with 0xc0000005.
     }
 }

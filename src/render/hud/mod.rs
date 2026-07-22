@@ -28,12 +28,12 @@ pub struct HudBatches<'a> {
 
 impl Renderer {
     pub(super) fn draw_ingame_hud(&mut self, metrics: &MenuMetrics, batches: HudBatches<'_>) {
-        let sw = self.swapchain_extent.width as f32;
-        let sh = self.swapchain_extent.height as f32;
+        let sw = self.swapchain.swapchain_extent.width as f32;
+        let sh = self.swapchain.swapchain_extent.height as f32;
         let gs = metrics.gs;
 
-        if self.state.hud_visible {
-            let script_before = self.state.script_hud_before_commands.clone();
+        if self.state.settings.hud_visible() {
+            let script_before = self.state.hud.script_hud_before_commands().clone();
             self.draw_script_hud(
                 &script_before,
                 metrics,
@@ -42,12 +42,12 @@ impl Renderer {
                 batches.icons,
                 batches.inventory,
             );
-            if self.state.debug_overlay {
+            if self.state.settings.debug_overlay() {
                 self.draw_debug_panel(metrics, batches.font);
             }
             self.draw_entity_overlays(metrics, batches.font, batches.block);
             self.draw_block_selection(metrics, batches.font);
-            if self.state.crosshair_visible {
+            if self.state.settings.crosshair_visible() {
                 self.draw_crosshair(gs, sw, sh, batches.font);
             }
             self.draw_potion_effects_hud(metrics, batches.inventory);
@@ -72,8 +72,8 @@ impl Renderer {
         self.draw_resource_pack_notice(metrics, batches.overlay, batches.widget, batches.font);
         self.draw_death_screen(metrics, batches.overlay, batches.widget, batches.font);
 
-        if self.state.hud_visible {
-            let script_after = self.state.script_hud_commands.clone();
+        if self.state.settings.hud_visible() {
+            let script_after = self.state.hud.script_hud_commands().clone();
             self.draw_script_hud(
                 &script_after,
                 metrics,
@@ -84,7 +84,7 @@ impl Renderer {
             );
         }
 
-        if self.state.inventory_open {
+        if self.state.inventory.inventory_open() {
             self.draw_inventory_overlay(
                 metrics,
                 batches.overlay,
