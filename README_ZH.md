@@ -122,6 +122,24 @@ Minecraft 原版 assets、缓存资源、下载的游戏文件、纹理、语言
 
 - 合法获取的 Minecraft Java Edition 1.8.9
 
+### Linux 系统依赖
+
+在 Linux 上，部分 crate 需要链接系统库（音频使用 ALSA，输入设备使用 udev，以及
+Vulkan、X11 和 Wayland 的头文件）。缺少这些库时，构建会在早期失败，并出现类似
+`The system library alsa required by crate alsa-sys was not found` 的错误。
+
+在 Debian 或 Ubuntu 上，可以使用以下命令安装：
+
+```
+sudo apt-get install build-essential cmake pkg-config libasound2-dev \
+  libudev-dev libvulkan-dev libxkbcommon-dev libwayland-dev libx11-dev \
+  libxcursor-dev libxi-dev libxrandr-dev
+```
+
+该列表与 Linux CI 任务安装的依赖一致。其他发行版请安装对应的开发包。
+
+### 从源码构建
+
 克隆仓库：
 
 ```

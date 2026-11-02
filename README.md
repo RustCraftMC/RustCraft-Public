@@ -122,6 +122,26 @@ To build RustCraft, you will need:
 
 - A legally obtained installation of Minecraft Java Edition 1.8.9
 
+### Linux System Dependencies
+
+On Linux, some crates link against system libraries (ALSA for audio, udev for
+input devices, and the Vulkan, X11 and Wayland headers). Without them the build
+stops early with an error such as `The system library alsa required by crate
+alsa-sys was not found`.
+
+On Debian or Ubuntu, install them with:
+
+```
+sudo apt-get install build-essential cmake pkg-config libasound2-dev \
+  libudev-dev libvulkan-dev libxkbcommon-dev libwayland-dev libx11-dev \
+  libxcursor-dev libxi-dev libxrandr-dev
+```
+
+This is the same list the Linux CI job installs. On other distributions,
+install the equivalent development packages.
+
+### Building from Source
+
 Clone the repository:
 
 ```
